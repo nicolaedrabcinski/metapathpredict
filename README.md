@@ -42,7 +42,7 @@ aiding researchers and healthcare professionals in rapid and accurate pathogen d
 
 ## Usage
 
-There are three main parts of the project: preparing the dataset, training models, and obtaining predictions. These parts are located in the workflow folder. You don't have to run them manually. Everything is configured in the bash script named scripts/run.sh.
+There are three main parts of the project: preparing the dataset, training models, and obtaining predictions. These parts are located in the workflow folder. You don't have to run them manually. Everything is configured in the bash script named 'run.sh'.
 
 ## Configuration
 
