@@ -53,12 +53,12 @@ You need to modify only 'main_config.json' to define correct paths for machine.
 
 1. Make the script executable:
    ```bash
-   chmod +x scripts/run.sh
+   chmod +x run.sh
    ```
 
 2. Run!
    ```bash
-   bash scripts/run.sh
+   bash run.sh
    ```
 
 ## Contributing
