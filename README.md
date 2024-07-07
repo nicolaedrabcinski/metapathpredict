@@ -67,4 +67,4 @@ We welcome contributions from the community. Please submit pull requests or open
 
 ## Note
 
-This project was developed the EEBG Summer School 2024 and would not have been possible without the valuable contributions of the following participants: Karyna Kystsiv, Alla Kovalchuk, Maxim Comarov, Martiniuc Anghelina, Anna Opanasenko, Victoria Loziak, Eugeniu Cotlabuga, Volodymyr Khailov, Erik Savchyn.
+This group project was developed during the EEBG Summer School 2024 and would not have been possible without the valuable contributions of the following participants: Karyna Kystsiv, Alla Kovalchuk, Maxim Comarov, Martiniuc Anghelina, Anna Opanasenko, Victoria Loziak, Eugeniu Cotlabuga, Volodymyr Khailov, Erik Savchyn.
