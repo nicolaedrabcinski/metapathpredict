@@ -1,11 +1,11 @@
 #!/bin/bash
-python /home/nicolaedrabcinski/eebg_project/workflow/prepare_ds.py /home/nicolaedrabcinski/eebg_project/main_config.json
-echo "finished preparation of training dataset for neural network and random forest modules"
+python /home/nicolaedrabcinski/metapathpredict/workflow/prepare_ds.py /home/nicolaedrabcinski/metapathpredict/main_config.json
+echo "Finished preparation of training datasets"
 
-python /home/nicolaedrabcinski/eebg_project/workflow/train.py /home/nicolaedrabcinski/eebg_project/main_config.json
-echo "finished training neural network and random forest modules"
+python /home/nicolaedrabcinski/metapathpredict/workflow/train.py /home/nicolaedrabcinski/metapathpredict/main_config.json
+echo "Finished training"
 
-python /home/nicolaedrabcinski/eebg_project/workflow/predict.py /home/nicolaedrabcinski/eebg_project/main_config.json
-echo "finished prediction of the test file"
+python /home/nicolaedrabcinski/metapathpredict/workflow/predict.py /home/nicolaedrabcinski/metapathpredict/main_config.json
+echo "Finished prediction"
 
-echo "If there were no errors, eebg_project works properly!"
+echo "If there were no errors, project works properly!"
