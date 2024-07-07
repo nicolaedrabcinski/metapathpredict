@@ -1,0 +1,90 @@
+{
+    "prepare_ds_virus": {
+      "path_virus": "/home/nicolaedrabcinski/eebg_project/data/input/viruses.fasta",
+      "path_eucaryotic": "/home/nicolaedrabcinski/eebg_project/data/input/eucaryotic.fasta",
+      "path_bact": "/home/nicolaedrabcinski/eebg_project/data/input/bacteria.fasta",
+      "virus_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_viruses_ds",
+      "eucaryotic_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_eucaryotic_ds",
+      "bacteria_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_bacteria_ds",
+      "n_cpus": 32,
+      "random_seed": 5
+    },
+    "prepare_ds_eucaryotic": {
+      "path_virus": "/home/nicolaedrabcinski/eebg_project/data/input/viruses.fasta",
+      "path_eucaryotic": "/home/nicolaedrabcinski/eebg_project/data/input/eucaryotic.fasta",
+      "path_bact": "/home/nicolaedrabcinski/eebg_project/data/input/bacteria.fasta",
+      "virus_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_viruses_ds",
+      "eucaryotic_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_eucaryotic_ds",
+      "bacteria_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_bacteria_ds",
+      "n_cpus": 32,
+      "random_seed": 5
+    },
+    "prepare_ds_bacteria": {
+      "path_virus": "/home/nicolaedrabcinski/eebg_project/data/input/viruses.fasta",
+      "path_eucaryotic": "/home/nicolaedrabcinski/eebg_project/data/input/eucaryotic.fasta",
+      "path_bact": "/home/nicolaedrabcinski/eebg_project/data/input/bacteria.fasta",
+      "virus_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_viruses_ds",
+      "eucaryotic_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_eucaryotic_ds",
+      "bacteria_out_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_bacteria_ds",
+      "n_cpus": 32,
+      "random_seed": 5
+    },
+    "train_viruses": {
+      "virus_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_viruses_ds",
+      "eucaryotic_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_eucaryotic_ds",
+      "bacteria_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_bacteria_ds",
+      "out_path": "/home/nicolaedrabcinski/eebg_project/data/weights/weights_viral",
+      "epochs": 1,
+      "n_cpus": 32,
+      "random_seed": 5
+    },
+    "train_eucaryotic": {
+      "virus_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_viruses_ds",
+      "eucaryotic_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_eucaryotic_ds",
+      "bacteria_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_bacteria_ds",
+      "out_path": "/home/nicolaedrabcinski/eebg_project/data/weights/weights_eucaryotic",
+      "epochs": 1,
+      "n_cpus": 32,
+      "random_seed": 5
+    },
+    "train_bacteria": {
+      "virus_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_viruses_ds",
+      "eucaryotic_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_eucaryotic_ds",
+      "bacteria_ds_path": "/home/nicolaedrabcinski/eebg_project/data/datasets/train_bacteria_ds",
+      "out_path": "/home/nicolaedrabcinski/eebg_project/data/weights/weights_bacteria",
+      "epochs": 1,
+      "n_cpus": 32,
+      "random_seed": 5
+    },
+    "predict_viral": {
+      "viruses_ds": "/home/nicolaedrabcinski/eebg_project/data/input/viruses.fasta",
+      "eucaryotic_ds": "/home/nicolaedrabcinski/eebg_project/data/input/eucaryotic.fasta",
+      "bacteria_ds": "/home/nicolaedrabcinski/eebg_project/data/input/bacteria.fasta",
+      "weights": "/home/nicolaedrabcinski/eebg_project/data/weights/weights_viral",
+      "out_path": "/home/nicolaedrabcinski/eebg_project/data/output/predictions_viral",
+      "n_cpus": 32,
+      "return_viral": true,
+      "limit": 750
+    },
+    "predict_eucaryotic": {
+      "viruses_ds": "/home/nicolaedrabcinski/eebg_project/data/input/viruses.fasta",
+      "eucaryotic_ds": "/home/nicolaedrabcinski/eebg_project/data/input/eucaryotic.fasta",
+      "bacteria_ds": "/home/nicolaedrabcinski/eebg_project/data/input/bacteria.fasta",
+      "weights": "/home/nicolaedrabcinski/eebg_project/data/weights/weights_eucaryotic",
+      "out_path": "/home/nicolaedrabcinski/eebg_project/data/output/predictions_eucaryotic",
+      "n_cpus": 32,
+      "return_eucaryotic": true,
+      "limit": 750
+    },
+    "predict_bacteria": {
+      "viruses_ds": "/home/nicolaedrabcinski/eebg_project/data/input/viruses.fasta",
+      "eucaryotic_ds": "/home/nicolaedrabcinski/eebg_project/data/input/eucaryotic.fasta",
+      "bacteria_ds": "/home/nicolaedrabcinski/eebg_project/data/input/bacteria.fasta",
+      "weights": "/home/nicolaedrabcinski/eebg_project/data/weights/weights_bacteria",
+      "out_path": "/home/nicolaedrabcinski/eebg_project/data/output/predictions_bacteria",
+      "n_cpus": 32,
+      "return_bacteria": true,
+      "limit": 750
+    }
+  }
+  
