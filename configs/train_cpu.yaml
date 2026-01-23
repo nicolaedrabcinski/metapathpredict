@@ -1,0 +1,51 @@
+# MetaPathPredict Training Configuration
+# CPU-optimized settings
+
+# Data configuration
+data:
+  default_fragment_size: 500
+  batch_size: 128
+  num_workers: 16
+  train_ratio: 0.8
+  val_ratio: 0.1
+  test_ratio: 0.1
+  pin_memory: false
+  prefetch_factor: 4
+
+# Model configuration
+model:
+  model_type: "multi_scale_cnn"
+  num_classes: 3
+  kernel_sizes: [5, 7, 11]
+  num_filters: [32, 64, 128]
+  hidden_dims: [256, 128]
+  dropout_rate: 0.3
+  use_batch_norm: true
+
+# Training configuration
+training:
+  num_epochs: 10
+  batch_size: 128
+  learning_rate: 0.002
+  weight_decay: 0.0001
+  optimizer: "adamw"
+  scheduler: "cosine"
+  warmup_epochs: 2
+  use_amp: false
+  gradient_clip_val: 1.0
+  early_stopping_patience: 5
+
+# Experiment tracking
+experiment:
+  name: "metapathpredict-unified"
+  tracking_backend: "duckdb"
+  save_dir: "./checkpoints"
+
+# Paths
+paths:
+  base_dir: "/app"
+  data_dir: "/app/data"
+  datasets_dir: "/app/data/datasets/unified"
+  weights_dir: "/app/data/weights/unified"
+  predictions_dir: "/app/data/output/predictions"
+  logs_dir: "/app/logs"

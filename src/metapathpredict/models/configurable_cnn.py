@@ -1,0 +1,262 @@
+"""
+Configurable CNN with variable kernel sizes.
+
+Supports kernel sizes: 5, 7, 10 (or custom).
+"""
+
+from __future__ import annotations
+
+from typing import Literal
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from .base import BaseModel, ConvBlock, SEBlock
+
+
+class ConfigurableCNN(BaseModel):
+    """
+    CNN with configurable kernel sizes for DNA sequence classification.
+    
+    Supports multiple kernel size configurations:
+    - Small (5): Better for short motifs
+    - Medium (7): Balanced approach  
+    - Large (10): Better for longer patterns
+    - Multi-scale: Combines multiple kernel sizes
+    """
+    
+    KERNEL_PRESETS = {
+        "small": [5, 5, 5],
+        "medium": [7, 7, 7],
+        "large": [10, 10, 10],
+        "progressive": [5, 7, 10],
+        "multi": [5, 7, 10],  # Multi-scale in parallel
+    }
+    
+    def __init__(
+        self,
+        in_channels: int = 4,
+        num_classes: int = 3,
+        kernel_preset: Literal["small", "medium", "large", "progressive", "multi"] = "medium",
+        custom_kernels: list[int] | None = None,
+        base_channels: int = 64,
+        num_blocks: int = 3,
+        use_se: bool = True,
+        dropout: float = 0.3,
+    ):
+        """
+        Initialize configurable CNN.
+        
+        Args:
+            in_channels: Input channels (4 for DNA one-hot).
+            num_classes: Number of output classes.
+            kernel_preset: Preset kernel configuration.
+            custom_kernels: Custom kernel sizes (overrides preset).
+            base_channels: Base number of channels.
+            num_blocks: Number of conv blocks.
+            use_se: Whether to use SE attention.
+            dropout: Dropout rate.
+        """
+        super().__init__()
+        
+        # Determine kernel sizes
+        if custom_kernels is not None:
+            self.kernel_sizes = custom_kernels
+        else:
+            self.kernel_sizes = self.KERNEL_PRESETS[kernel_preset]
+        
+        self.kernel_preset = kernel_preset
+        self.use_multi_scale = (kernel_preset == "multi")
+        
+        if self.use_multi_scale:
+            self._build_multiscale(in_channels, num_classes, base_channels, use_se, dropout)
+        else:
+            self._build_sequential(in_channels, num_classes, base_channels, num_blocks, use_se, dropout)
+    
+    def _build_sequential(
+        self,
+        in_channels: int,
+        num_classes: int,
+        base_channels: int,
+        num_blocks: int,
+        use_se: bool,
+        dropout: float,
+    ) -> None:
+        """Build sequential CNN architecture."""
+        layers = []
+        
+        current_channels = in_channels
+        
+        for i, kernel_size in enumerate(self.kernel_sizes[:num_blocks]):
+            out_channels = base_channels * (2 ** i)
+            
+            layers.append(
+                ConvBlock(
+                    in_channels=current_channels,
+                    out_channels=out_channels,
+                    kernel_size=kernel_size,
+                    padding=kernel_size // 2,
+                    pool_size=2,
+                    dropout=dropout if i > 0 else 0.0,
+                )
+            )
+            
+            if use_se:
+                layers.append(SEBlock(out_channels))
+            
+            current_channels = out_channels
+        
+        self.features = nn.Sequential(*layers)
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(current_channels, current_channels // 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(current_channels // 2, num_classes),
+        )
+        
+        self._final_channels = current_channels
+    
+    def _build_multiscale(
+        self,
+        in_channels: int,
+        num_classes: int,
+        base_channels: int,
+        use_se: bool,
+        dropout: float,
+    ) -> None:
+        """Build multi-scale parallel CNN architecture."""
+        self.branches = nn.ModuleList()
+        
+        for kernel_size in self.kernel_sizes:
+            branch = nn.Sequential(
+                ConvBlock(
+                    in_channels=in_channels,
+                    out_channels=base_channels,
+                    kernel_size=kernel_size,
+                    padding=kernel_size // 2,
+                    pool_size=2,
+                    dropout=0.0,
+                ),
+                SEBlock(base_channels) if use_se else nn.Identity(),
+                ConvBlock(
+                    in_channels=base_channels,
+                    out_channels=base_channels * 2,
+                    kernel_size=kernel_size,
+                    padding=kernel_size // 2,
+                    pool_size=2,
+                    dropout=dropout,
+                ),
+            )
+            self.branches.append(branch)
+        
+        # Fusion layer
+        combined_channels = base_channels * 2 * len(self.kernel_sizes)
+        
+        self.fusion = nn.Sequential(
+            nn.Conv1d(combined_channels, base_channels * 4, kernel_size=1),
+            nn.BatchNorm1d(base_channels * 4),
+            nn.ReLU(inplace=True),
+        )
+        
+        self.pool = nn.AdaptiveAvgPool1d(1)
+        
+        self.classifier = nn.Sequential(
+            nn.Dropout(dropout),
+            nn.Linear(base_channels * 4, base_channels * 2),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+            nn.Linear(base_channels * 2, num_classes),
+        )
+        
+        self._final_channels = base_channels * 4
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Forward pass."""
+        if self.use_multi_scale:
+            # Process through parallel branches
+            branch_outputs = [branch(x) for branch in self.branches]
+            
+            # Align lengths (take minimum)
+            min_len = min(out.size(2) for out in branch_outputs)
+            branch_outputs = [out[:, :, :min_len] for out in branch_outputs]
+            
+            # Concatenate and fuse
+            x = torch.cat(branch_outputs, dim=1)
+            x = self.fusion(x)
+        else:
+            x = self.features(x)
+        
+        x = self.pool(x)
+        x = x.flatten(1)
+        x = self.classifier(x)
+        
+        return x
+    
+    def get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
+        """Get feature embeddings before classifier."""
+        if self.use_multi_scale:
+            branch_outputs = [branch(x) for branch in self.branches]
+            min_len = min(out.size(2) for out in branch_outputs)
+            branch_outputs = [out[:, :, :min_len] for out in branch_outputs]
+            x = torch.cat(branch_outputs, dim=1)
+            x = self.fusion(x)
+        else:
+            x = self.features(x)
+        
+        x = self.pool(x)
+        x = x.flatten(1)
+        
+        return x
+
+
+# Expose KERNEL_PRESETS at module level for backwards compatibility
+KERNEL_PRESETS = ConfigurableCNN.KERNEL_PRESETS
+
+
+def create_configurable_cnn(
+    kernel_size: int | str = 7,
+    in_channels: int = 4,
+    num_classes: int = 3,
+    **kwargs,
+) -> ConfigurableCNN:
+    """
+    Factory function to create ConfigurableCNN.
+    
+    Args:
+        kernel_size: Kernel size (5, 7, 10) or preset name.
+        in_channels: Input channels.
+        num_classes: Number of classes.
+        **kwargs: Additional arguments.
+    
+    Returns:
+        ConfigurableCNN instance.
+    """
+    if isinstance(kernel_size, str):
+        return ConfigurableCNN(
+            in_channels=in_channels,
+            num_classes=num_classes,
+            kernel_preset=kernel_size,
+            **kwargs,
+        )
+    elif isinstance(kernel_size, int):
+        preset_map = {5: "small", 7: "medium", 10: "large"}
+        preset = preset_map.get(kernel_size, "medium")
+        return ConfigurableCNN(
+            in_channels=in_channels,
+            num_classes=num_classes,
+            kernel_preset=preset,
+            custom_kernels=[kernel_size] * 3,
+            **kwargs,
+        )
+    else:
+        # Assume it's a list
+        return ConfigurableCNN(
+            in_channels=in_channels,
+            num_classes=num_classes,
+            custom_kernels=list(kernel_size),
+            **kwargs,
+        )

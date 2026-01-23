@@ -1,0 +1,28 @@
+# Prometheus configuration
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  # Ray metrics
+  - job_name: 'ray'
+    static_configs:
+      - targets: ['ray-head:8080']
+    metrics_path: /metrics
+
+  # Dagster metrics
+  - job_name: 'dagster'
+    static_configs:
+      - targets: ['dagster-webserver:3000']
+    metrics_path: /metrics
+
+  # MinIO metrics
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['minio:9000']
+    metrics_path: /minio/v2/metrics/cluster
+
+  # PostgreSQL metrics (requires postgres_exporter)
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres:5432']

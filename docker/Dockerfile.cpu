@@ -1,0 +1,50 @@
+# MetaPathPredict Application Dockerfile (CPU-only)
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    curl \
+    build-essential \
+    libhdf5-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first for caching
+COPY requirements.txt .
+COPY pyproject.toml .
+
+# Install PyTorch CPU and dependencies
+RUN pip install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
+# Install project dependencies
+RUN pip install --no-cache-dir \
+    numpy \
+    scipy \
+    scikit-learn \
+    h5py \
+    pandas \
+    pydantic \
+    pydantic-settings \
+    pyyaml \
+    tqdm \
+    duckdb \
+    pyarrow \
+    boto3 \
+    biopython \
+    pytest
+
+# Copy source code and package files
+COPY src/ src/
+COPY README.md .
+
+# Install the package in editable mode
+RUN pip install -e .
+
+# Set environment variables
+ENV PYTHONPATH=/app/src:/app
+ENV PYTHONUNBUFFERED=1
+
+# Default command
+CMD ["python", "-m", "metapathpredict.cli", "--help"]

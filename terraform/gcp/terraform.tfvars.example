@@ -1,0 +1,38 @@
+# =============================================================================
+# Development Environment Configuration
+# Optimized for cost (~$20-30/month)
+# =============================================================================
+
+project_id   = "your-project-id"  # CHANGE THIS
+project_name = "metapathpredict"
+region       = "us-central1"
+zone         = "us-central1-a"
+environment  = "development"
+
+labels = {
+  project     = "metapathpredict"
+  managed_by  = "terraform"
+  environment = "development"
+  cost_center = "ml-training"
+}
+
+# Security - Restrict SSH access to your IP
+allowed_ssh_ips = ["0.0.0.0/0"]  # CHANGE to your IP: ["YOUR.IP.ADDRESS/32"]
+
+# Orchestration VM - e2-micro is Always Free tier eligible
+orchestration_machine_type = "e2-micro"
+
+# GPU VM - Disabled by default, enable when training
+create_gpu_vm   = false
+gpu_machine_type = "n1-standard-4"
+gpu_type        = "nvidia-tesla-t4"
+use_preemptible = true  # Up to 91% cheaper!
+
+# Cloud SQL - Disabled by default, use DuckDB instead for free
+create_cloud_sql = false
+sql_tier        = "db-f1-micro"
+db_password     = ""  # Set via TF_VAR_db_password env var if enabled
+
+# Cloud Run - Disabled by default
+create_cloud_run  = false
+inference_public  = false
