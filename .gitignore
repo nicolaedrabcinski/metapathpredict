@@ -194,3 +194,19 @@ mlartifacts/
 # DuckDB
 *.duckdb
 *.duckdb.wal
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Raw data (large FASTA downloads)
+data/raw/
+
+# Claude Code
+.claude/
+
+# Terraform state
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/.terraform/

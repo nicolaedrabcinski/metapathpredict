@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "metapathpredict"
 version = "2.0.0"
-description = "Modern deep learning for DNA sequence classification"
+description = "DNA sequence classification using Contrastive Learning and Deep Reinforcement Learning"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -30,6 +30,10 @@ keywords = [
     "dna-classification",
     "metagenomics",
     "pytorch",
+    "contrastive-learning",
+    "reinforcement-learning",
+    "simclr",
+    "actor-critic",
 ]
 dependencies = [
     "torch>=2.0.0",
@@ -51,6 +55,10 @@ dev = [
     "black>=23.0.0",
     "isort>=5.12.0",
     "pre-commit>=3.0.0",
+]
+api = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
 ]
 viz = [
     "matplotlib>=3.7.0",
@@ -81,17 +89,17 @@ tracking = [
     "wandb>=0.16.0",
 ]
 all = [
-    "metapathpredict[dev,viz,pipeline,distributed,orchestration,docs,tracking]",
+    "metapathpredict[dev,api,viz,pipeline,distributed,orchestration,docs,tracking]",
 ]
 
 [project.scripts]
 metapathpredict = "metapathpredict.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/metapathpredict/metapathpredict"
-Documentation = "https://metapathpredict.readthedocs.io"
-Repository = "https://github.com/metapathpredict/metapathpredict"
-Issues = "https://github.com/metapathpredict/metapathpredict/issues"
+Homepage = "https://github.com/nicolaedrabcinski/metapathpredict"
+Documentation = "https://github.com/nicolaedrabcinski/metapathpredict#readme"
+Repository = "https://github.com/nicolaedrabcinski/metapathpredict"
+Issues = "https://github.com/nicolaedrabcinski/metapathpredict/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/metapathpredict"]

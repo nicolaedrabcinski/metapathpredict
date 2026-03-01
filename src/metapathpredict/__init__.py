@@ -2,14 +2,15 @@
 MetaPathPredict - Deep Learning for Metagenomic Sequence Classification
 
 A PyTorch-based framework for classifying metagenomic sequences into
-virus, bacteria, and eukaryotic categories.
+virus, bacteria, and eukaryotic categories using Contrastive Learning
+and Deep Reinforcement Learning.
 
 Features:
-- Modern CNN architectures with attention mechanisms
-- Mixed precision training support
-- Test-time augmentation
-- Ensemble predictions
+- Contrastive pretraining (SimCLR / SupCon)
+- Deep RL fine-tuning (DQN, REINFORCE, Actor-Critic)
+- Full pipeline: contrastive pretrain -> RL fine-tune
 - CLI interface for training and inference
+- FastAPI dashboard for interpretability
 """
 
 __version__ = "2.0.0"
@@ -22,44 +23,59 @@ from metapathpredict.data import (
     SequenceDataset,
     SequencePreprocessor,
 )
-from metapathpredict.inference import BatchPredictor, EnsemblePredictor, Predictor
 from metapathpredict.models import (
+    # Contrastive Learning (primary)
+    ContrastiveAugmentation,
+    ContrastiveEncoder,
+    ContrastiveTrainer,
+    NTXentLoss,
+    SupConLoss,
+    # Reinforcement Learning (primary)
+    ActorCriticAgent,
+    DQNAgent,
+    PolicyGradientAgent,
+    RLTrainer,
+    SequenceEnvironment,
+    ReplayBuffer,
+    # CNN backbone
+    ConfigurableCNN,
+    create_configurable_cnn,
+    # Legacy CNN models (kept for backward compatibility)
     MultiScaleCNN,
     ResidualCNN,
     SimpleCNN,
     UnifiedClassifier,
     create_cnn_model,
 )
-from metapathpredict.training import (
-    EarlyStopping,
-    ModelCheckpoint,
-    Trainer,
-    create_trainer,
-    get_scheduler,
-)
 
 __all__ = [
     # Config
     "Settings",
-    # Models
-    "UnifiedClassifier",
-    "MultiScaleCNN",
-    "ResidualCNN",
-    "SimpleCNN",
-    "create_cnn_model",
+    # Contrastive Learning
+    "ContrastiveEncoder",
+    "ContrastiveTrainer",
+    "ContrastiveAugmentation",
+    "NTXentLoss",
+    "SupConLoss",
+    # Reinforcement Learning
+    "DQNAgent",
+    "PolicyGradientAgent",
+    "ActorCriticAgent",
+    "RLTrainer",
+    "SequenceEnvironment",
+    "ReplayBuffer",
+    # CNN backbone
+    "ConfigurableCNN",
+    "create_configurable_cnn",
     # Data
     "SequenceDataset",
     "HDF5SequenceDataset",
     "SequenceDataModule",
     "SequencePreprocessor",
-    # Training
-    "Trainer",
-    "create_trainer",
-    "EarlyStopping",
-    "ModelCheckpoint",
-    "get_scheduler",
-    # Inference
-    "Predictor",
-    "BatchPredictor",
-    "EnsemblePredictor",
+    # Legacy
+    "UnifiedClassifier",
+    "MultiScaleCNN",
+    "ResidualCNN",
+    "SimpleCNN",
+    "create_cnn_model",
 ]

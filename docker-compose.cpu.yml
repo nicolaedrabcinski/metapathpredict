@@ -97,6 +97,36 @@ services:
     stdin_open: true
     tty: true
 
+  # ===========================================
+  # DASHBOARD (ML Interpretability)
+  # ===========================================
+  
+  # SeqSort Dashboard - React + FastAPI
+  dashboard:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dashboard
+    container_name: metapathpredict-dashboard
+    ports:
+      - "3002:8000"
+    environment:
+      S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin123
+      POSTGRES_HOST: postgres
+      POSTGRES_USER: metapathpredict
+      POSTGRES_PASSWORD: metapathpredict123
+    volumes:
+      - ./src:/app/src
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    profiles:
+      - dashboard
+
 volumes:
   minio_data:
   postgres_data:

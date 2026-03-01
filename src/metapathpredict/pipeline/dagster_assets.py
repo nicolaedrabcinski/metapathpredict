@@ -59,7 +59,7 @@ if DAGSTER_AVAILABLE:
         
         # Initialize preprocessor
         preprocessor = SequencePreprocessor(
-            sequence_length=settings.data.sequence_length,
+            sequence_length=settings.data.default_fragment_size,
         )
         
         # Process each class
@@ -114,7 +114,7 @@ if DAGSTER_AVAILABLE:
         data_array = np.stack(all_data, axis=0)
         labels_array = np.array(all_labels, dtype=np.int64)
         
-        output_path = output_dir / f"encoded_train_{settings.data.sequence_length}.hdf5"
+        output_path = output_dir / f"encoded_train_{settings.data.default_fragment_size}.hdf5"
         
         with h5py.File(output_path, "w") as f:
             f.create_dataset("data", data=data_array, compression="gzip")
@@ -126,7 +126,7 @@ if DAGSTER_AVAILABLE:
             value=str(output_path),
             metadata={
                 "num_samples": MetadataValue.int(len(all_data)),
-                "sequence_length": MetadataValue.int(settings.data.sequence_length),
+                "sequence_length": MetadataValue.int(settings.data.default_fragment_size),
                 "class_distribution": MetadataValue.json({
                     "bacteria": int((labels_array == 0).sum()),
                     "eukaryotic": int((labels_array == 1).sum()),
@@ -137,186 +137,283 @@ if DAGSTER_AVAILABLE:
     
     
     @asset(
-        description="Train sequence classification model",
+        description="Train contrastive + RL pipeline",
         deps=[prepare_dataset_asset],
         group_name="training",
         compute_kind="pytorch",
     )
     def train_model_asset(context: AssetExecutionContext) -> Output:
         """
-        Train model on prepared dataset.
+        Train full pipeline: contrastive pretraining -> RL fine-tuning.
         """
         logger = get_dagster_logger()
-        
+
         import time
         import uuid
-        
+
         import torch
-        
+
         from metapathpredict.config import Settings
         from metapathpredict.data import SequenceDataModule
-        from metapathpredict.models import UnifiedClassifier
-        from metapathpredict.training import (
-            EarlyStopping,
-            ModelCheckpoint,
-            Trainer,
-            get_scheduler,
+        from metapathpredict.models import (
+            ActorCriticAgent,
+            ContrastiveAugmentation,
+            ContrastiveEncoder,
+            ContrastiveTrainer,
+            DQNAgent,
+            PolicyGradientAgent,
+            RLTrainer,
+            SequenceEnvironment,
         )
-        
+
         settings = Settings()
-        
-        # Create data module
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         data_module = SequenceDataModule.from_config(settings)
         data_module.setup()
-        
-        # Create model
-        model = UnifiedClassifier(
-            in_channels=4,
-            num_classes=3,
-            sequence_length=settings.data.sequence_length,
-        )
-        
-        logger.info(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-        
-        # Create optimizer and scheduler
-        optimizer = torch.optim.AdamW(
-            model.parameters(),
-            lr=settings.training.learning_rate,
-            weight_decay=settings.training.weight_decay,
-        )
-        
-        scheduler = get_scheduler(
-            name="warmup_cosine",
-            optimizer=optimizer,
-            total_epochs=settings.training.epochs,
-            warmup_epochs=5,
-        )
-        
-        # Callbacks
-        output_dir = settings.paths.weights_dir / "unified"
+
+        output_dir = settings.paths.weights_dir
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        callbacks = [
-            EarlyStopping(monitor="val_loss", patience=10),
-            ModelCheckpoint(save_dir=output_dir, monitor="val_loss"),
-        ]
-        
-        # Train
-        trainer = Trainer(
-            model=model,
-            train_loader=data_module.train_dataloader(),
-            val_loader=data_module.val_dataloader(),
-            optimizer=optimizer,
-            scheduler=scheduler,
-            config=settings.training,
-            callbacks=callbacks,
-        )
-        
+
         start_time = time.time()
-        history = trainer.fit()
+
+        # ── Phase 1: Contrastive Pretraining ──
+        cfg_c = settings.contrastive
+        encoder = ContrastiveEncoder(
+            in_channels=4,
+            backbone=cfg_c.backbone,
+            projection_dim=cfg_c.projection_dim,
+            hidden_dim=cfg_c.hidden_dim,
+            base_channels=cfg_c.base_channels,
+        )
+        logger.info(f"ContrastiveEncoder: {sum(p.numel() for p in encoder.parameters()):,} params")
+
+        augmentation = ContrastiveAugmentation(
+            mutation_rate=cfg_c.mutation_rate,
+            mask_rate=cfg_c.mask_rate,
+        )
+        optimizer_c = torch.optim.AdamW(
+            encoder.parameters(), lr=cfg_c.learning_rate, weight_decay=cfg_c.weight_decay,
+        )
+        trainer_c = ContrastiveTrainer(
+            encoder=encoder,
+            optimizer=optimizer_c,
+            augmentation=augmentation,
+            temperature=cfg_c.temperature,
+            use_supervised=(cfg_c.loss_type == "supcon"),
+            device=device,
+        )
+
+        train_loader = data_module.train_dataloader()
+        best_loss = float("inf")
+        for epoch in range(cfg_c.num_epochs):
+            loss = trainer_c.train_epoch(train_loader)
+            logger.info(f"Contrastive Epoch {epoch+1}/{cfg_c.num_epochs} - Loss: {loss:.4f}")
+            if loss < best_loss:
+                best_loss = loss
+                torch.save({
+                    "encoder_state_dict": encoder.state_dict(),
+                    "config": cfg_c.model_dump(),
+                }, output_dir / "contrastive_best.pt")
+
+        contrastive_ckpt = output_dir / "contrastive_best.pt"
+
+        # ── Phase 2: RL Fine-tuning ──
+        cfg_r = settings.rl
+        all_sequences, all_labels = [], []
+        for batch in data_module.train_dataloader():
+            all_sequences.append(batch[0])
+            all_labels.append(batch[1])
+        all_sequences = torch.cat(all_sequences, dim=0)
+        all_labels = torch.cat(all_labels, dim=0)
+
+        agent_map = {
+            "dqn": DQNAgent,
+            "policy_gradient": PolicyGradientAgent,
+            "actor_critic": ActorCriticAgent,
+        }
+        AgentClass = agent_map[cfg_r.algorithm]
+        agent = AgentClass(
+            in_channels=4, num_actions=3,
+            backbone=cfg_r.backbone, hidden_dim=cfg_r.hidden_dim,
+        )
+
+        # Transfer encoder weights
+        if contrastive_ckpt.exists():
+            ckpt = torch.load(contrastive_ckpt, map_location=device, weights_only=False)
+            sd = ckpt["encoder_state_dict"]
+            transfer = {k: v for k, v in sd.items() if k.startswith("encoder.")}
+            agent.load_state_dict(transfer, strict=False)
+            logger.info(f"Transferred {len(transfer)} tensors from contrastive encoder")
+
+        env = SequenceEnvironment(
+            sequences=all_sequences, labels=all_labels,
+            reward_correct=cfg_r.reward_correct,
+            reward_incorrect=cfg_r.reward_incorrect,
+            reward_uncertain=cfg_r.reward_uncertain,
+        )
+        optimizer_r = torch.optim.AdamW(
+            agent.parameters(), lr=cfg_r.learning_rate, weight_decay=cfg_r.weight_decay,
+        )
+        rl_trainer = RLTrainer(
+            agent=agent, environment=env, optimizer=optimizer_r,
+            device=device, gamma=cfg_r.gamma, algorithm=cfg_r.algorithm,
+        )
+
+        best_accuracy = 0.0
+        for epoch in range(cfg_r.num_epochs):
+            if cfg_r.algorithm == "dqn":
+                frac = min(epoch / max(cfg_r.epsilon_decay_epochs, 1), 1.0)
+                epsilon = cfg_r.epsilon_start + frac * (cfg_r.epsilon_end - cfg_r.epsilon_start)
+            else:
+                epsilon = 0.0
+            metrics = rl_trainer.train_epoch(num_episodes=cfg_r.episodes_per_epoch, epsilon=epsilon)
+            logger.info(
+                f"RL Epoch {epoch+1}/{cfg_r.num_epochs} - "
+                f"Reward: {metrics['avg_reward']:.4f}, Accuracy: {metrics['accuracy']:.4f}"
+            )
+            if metrics["accuracy"] > best_accuracy:
+                best_accuracy = metrics["accuracy"]
+                torch.save({
+                    "agent_state_dict": agent.state_dict(),
+                    "algorithm": cfg_r.algorithm,
+                    "config": cfg_r.model_dump(),
+                    "metrics": metrics,
+                }, output_dir / "rl_best.pt")
+
         duration = time.time() - start_time
-        
-        # Save final model
-        model_path = output_dir / "final_model.pt"
-        trainer.save_checkpoint(model_path)
-        
+
         # Log to DuckDB if available
         try:
             from metapathpredict.pipeline.duckdb_connector import DuckDBConnector
-            
+
             db = DuckDBConnector(str(settings.paths.data_dir / "metadata.duckdb"))
             db.create_sequences_table()
             db.log_training_run(
                 run_id=str(uuid.uuid4()),
-                model_type="UnifiedClassifier",
-                config=settings.training.model_dump(),
-                train_loss=history["train_loss"][-1],
-                val_loss=history["val_loss"][-1],
-                val_accuracy=history["val_accuracy"][-1],
-                epochs=len(history["train_loss"]),
+                model_type=f"Contrastive+{AgentClass.__name__}",
+                config={**cfg_c.model_dump(), **cfg_r.model_dump()},
+                train_loss=best_loss,
+                val_loss=0.0,
+                val_accuracy=best_accuracy,
+                epochs=cfg_c.num_epochs + cfg_r.num_epochs,
                 duration=duration,
             )
             db.close()
         except Exception as e:
             logger.warning(f"Could not log to DuckDB: {e}")
-        
+
         return Output(
-            value=str(model_path),
+            value=str(output_dir / "rl_best.pt"),
             metadata={
-                "final_train_loss": MetadataValue.float(history["train_loss"][-1]),
-                "final_val_loss": MetadataValue.float(history["val_loss"][-1]),
-                "final_val_accuracy": MetadataValue.float(history["val_accuracy"][-1]),
-                "epochs_trained": MetadataValue.int(len(history["train_loss"])),
+                "contrastive_best_loss": MetadataValue.float(best_loss),
+                "rl_best_accuracy": MetadataValue.float(best_accuracy),
+                "total_epochs": MetadataValue.int(cfg_c.num_epochs + cfg_r.num_epochs),
                 "duration_seconds": MetadataValue.float(duration),
             },
         )
     
     
     @asset(
-        description="Run inference on test data",
+        description="Run inference on test data using RL agent",
         deps=[train_model_asset],
         group_name="inference",
         compute_kind="pytorch",
     )
     def predict_asset(context: AssetExecutionContext) -> Output:
         """
-        Run inference on test dataset.
+        Run inference on test dataset using trained RL agent.
         """
         logger = get_dagster_logger()
-        
+
         import numpy as np
-        
+        import torch
+        import torch.nn.functional as F
+
         from metapathpredict.config import Settings
         from metapathpredict.data import HDF5SequenceDataset
-        from metapathpredict.inference import Predictor
-        from metapathpredict.models import UnifiedClassifier
-        from torch.utils.data import DataLoader
-        
-        settings = Settings()
-        
-        # Load model
-        model_path = settings.paths.weights_dir / "unified" / "best_model.pt"
-        
-        predictor = Predictor.from_checkpoint(
-            checkpoint_path=model_path,
-            model_class=UnifiedClassifier,
-            model_kwargs={
-                "in_channels": 4,
-                "num_classes": 3,
-                "sequence_length": settings.data.sequence_length,
-            },
+        from metapathpredict.models import (
+            ActorCriticAgent,
+            DQNAgent,
+            PolicyGradientAgent,
         )
-        
+        from torch.utils.data import DataLoader
+
+        settings = Settings()
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # Load RL agent from checkpoint
+        rl_path = settings.paths.weights_dir / "rl_best.pt"
+        if not rl_path.exists():
+            raise FileNotFoundError(f"RL checkpoint not found: {rl_path}")
+
+        ckpt = torch.load(rl_path, map_location=device, weights_only=False)
+        algorithm = ckpt.get("algorithm", "actor_critic")
+        config = ckpt.get("config", {})
+
+        agent_cls = {
+            "dqn": DQNAgent,
+            "policy_gradient": PolicyGradientAgent,
+            "actor_critic": ActorCriticAgent,
+        }.get(algorithm, ActorCriticAgent)
+
+        agent = agent_cls(
+            in_channels=4, num_actions=3,
+            backbone=config.get("backbone", "medium"),
+            hidden_dim=config.get("hidden_dim", 256),
+        )
+        agent.load_state_dict(ckpt["agent_state_dict"], strict=False)
+        agent.to(device).eval()
+        logger.info(f"Loaded {algorithm} agent from {rl_path}")
+
         # Load test data
-        test_path = settings.paths.data_dir / "datasets" / "unified" / f"encoded_test_{settings.data.sequence_length}.hdf5"
-        
+        test_path = (
+            settings.paths.data_dir / "datasets" / "unified"
+            / f"encoded_test_{settings.data.default_fragment_size}.hdf5"
+        )
         test_dataset = HDF5SequenceDataset(str(test_path))
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
-        
+
         # Predict
-        results = predictor.predict_dataloader(test_loader, use_tta=True)
-        
-        accuracy = results.get("accuracy", 0)
-        
+        all_preds = []
+        all_probs = []
+        all_targets = []
+
+        with torch.no_grad():
+            for batch in test_loader:
+                x, labels = batch[0].to(device), batch[1]
+                if algorithm == "dqn":
+                    out = agent(x)
+                    probs = F.softmax(out, dim=1)
+                elif algorithm == "policy_gradient":
+                    probs, _ = agent(x)
+                else:
+                    logits, _ = agent(x)
+                    probs = F.softmax(logits, dim=1)
+
+                preds = probs.argmax(dim=1)
+                all_preds.append(preds.cpu().numpy())
+                all_probs.append(probs.cpu().numpy())
+                all_targets.append(labels.numpy())
+
+        predictions = np.concatenate(all_preds)
+        probabilities = np.concatenate(all_probs)
+        targets = np.concatenate(all_targets)
+        accuracy = float((predictions == targets).mean())
+
         # Save predictions
         output_path = settings.paths.data_dir / "output" / "predictions" / "test_predictions.npz"
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        np.savez(
-            output_path,
-            predictions=results["predicted_class"],
-            probabilities=results["probabilities"],
-            targets=results.get("targets"),
-        )
-        
+
+        np.savez(output_path, predictions=predictions, probabilities=probabilities, targets=targets)
         logger.info(f"Predictions saved to {output_path}")
-        
+
         return Output(
             value=str(output_path),
             metadata={
-                "num_predictions": MetadataValue.int(len(results["predicted_class"])),
+                "num_predictions": MetadataValue.int(len(predictions)),
                 "accuracy": MetadataValue.float(accuracy),
-                "avg_confidence": MetadataValue.float(float(np.mean(results["confidence"]))),
+                "algorithm": MetadataValue.text(algorithm),
             },
         )
     

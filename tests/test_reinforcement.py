@@ -172,12 +172,13 @@ class TestDQNAgent:
             in_channels=4,
             num_actions=3,
         )
-        
+        agent.eval()  # Ensure deterministic BatchNorm behavior
+
         state = torch.randn(4, 100)
-        
+
         # With epsilon=0.0, should always pick same action (greedy)
         actions = [agent.select_action(state, epsilon=0.0)[0] for _ in range(10)]
-        
+
         assert len(set(actions)) == 1
 
     def test_forward(self):

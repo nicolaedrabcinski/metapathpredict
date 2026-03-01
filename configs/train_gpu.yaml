@@ -1,76 +1,76 @@
 # MetaPathPredict Training Configuration
-# CPU-optimized settings
+# GPU-optimized settings (single GPU, NVIDIA)
 
 # Data configuration
 data:
   default_fragment_size: 500
-  num_workers: 16
+  num_workers: 8
   train_ratio: 0.8
   val_ratio: 0.1
   test_ratio: 0.1
 
-# Model configuration
+# Model configuration (legacy supervised CNN)
 model:
   model_type: "multi_scale_cnn"
   num_classes: 3
   kernel_sizes: [5, 7, 11]
-  num_filters: [32, 64, 128]
-  hidden_dims: [256, 128]
+  num_filters: [64, 128, 256]
+  hidden_dims: [512, 256]
   dropout_rate: 0.3
   use_batch_norm: true
 
 # Training configuration
 training:
-  num_epochs: 10
-  batch_size: 128
+  num_epochs: 30
+  batch_size: 512
   learning_rate: 0.002
   weight_decay: 0.0001
   optimizer: "adamw"
   scheduler: "cosine"
-  warmup_epochs: 2
-  use_amp: false
+  warmup_epochs: 3
+  use_amp: true
   gradient_clip_val: 1.0
-  patience: 5
+  patience: 10
 
 # Contrastive learning configuration
 contrastive:
-  backbone: "medium"
-  base_channels: 64
-  projection_dim: 128
-  hidden_dim: 256
+  backbone: "large"
+  base_channels: 128
+  projection_dim: 256
+  hidden_dim: 512
   loss_type: "supcon"
   temperature: 0.07
   mutation_rate: 0.1
   mask_rate: 0.15
-  num_epochs: 20
+  num_epochs: 50
   learning_rate: 0.001
   weight_decay: 0.0001
-  batch_size: 128
+  batch_size: 512
 
 # Reinforcement learning configuration
 rl:
   algorithm: "actor_critic"
-  backbone: "medium"
-  hidden_dim: 256
+  backbone: "large"
+  hidden_dim: 512
   reward_correct: 1.0
   reward_incorrect: -0.5
   reward_uncertain: -0.1
-  num_epochs: 10
-  episodes_per_epoch: 1000
+  num_epochs: 30
+  episodes_per_epoch: 5000
   learning_rate: 0.0001
   weight_decay: 0.0001
   gamma: 0.99
   epsilon_start: 1.0
-  epsilon_end: 0.05
-  epsilon_decay_epochs: 5
-  replay_buffer_size: 10000
+  epsilon_end: 0.01
+  epsilon_decay_epochs: 15
+  replay_buffer_size: 50000
   target_update_freq: 5
 
 # Project settings
-project_name: "metapathpredict-unified"
-experiment_name: "cpu-training"
+project_name: "metapathpredict-gpu"
+experiment_name: "gpu-training"
 
-# Paths (relative to project root, resolved at runtime)
+# Paths
 paths:
   base_dir: "."
   data_dir: "data"

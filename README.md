@@ -1,383 +1,273 @@
 # MetaPathPredict
 
-Modern DNA sequence classification using deep learning with PyTorch 2.0+.
+Deep learning framework for metagenomic DNA sequence classification using **Contrastive Learning** and **Deep Reinforcement Learning**.
+
+Classifies DNA fragments into three categories: **bacteria**, **eukaryotic**, and **virus**.
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Tests](https://img.shields.io/badge/tests-184%20passed-brightgreen.svg)]()
 
-## Features
+## How It Works
 
-- 🧬 **DNA Sequence Classification** - Classify sequences as virus, bacteria, or eukaryotic
-- 🚀 **Modern PyTorch 2.0** - Mixed precision training, torch.compile support
-- 🎯 **Three Training Approaches**:
-  - **CNN** with configurable kernel sizes (5, 7, 10, multi-scale)
-  - **Contrastive Learning** (SimCLR, SupCon) for powerful embeddings
-  - **Deep Reinforcement Learning** (DQN, Policy Gradient, Actor-Critic)
-- 📊 **Data Engineering Stack** - DuckDB, MinIO, Ray, Dagster integration
-- ⚡ **High Performance** - Distributed training, GPU acceleration
+```
+FASTA files ──> One-hot encode ──> Contrastive Pretrain (SimCLR/SupCon)
+                   (ACGT → 4ch)         │
+                                         ▼
+                                   Transfer encoder weights
+                                         │
+                                         ▼
+                                   RL Fine-tune (Actor-Critic/DQN/REINFORCE)
+                                         │
+                                         ▼
+                                   bacteria / eukaryotic / virus
+```
+
+**Pipeline:** The CNN backbone is first pretrained with contrastive learning to learn robust DNA representations, then fine-tuned with reinforcement learning for classification.
 
 ## Installation
 
-### Basic Installation
-
 ```bash
-# Clone repository
-git clone https://github.com/yourusername/metapathpredict.git
+git clone https://github.com/nicolaedrabcinski/metapathpredict.git
 cd metapathpredict
-
-# Create virtual environment
-python -m venv venv
-source venv/bin/activate  # Linux/Mac
-# or
-.\venv\Scripts\activate  # Windows
-
-# Install package
 pip install -e .
 ```
 
-### Development Installation
+With all optional dependencies:
 
 ```bash
-pip install -e ".[dev]"
-```
-
-### Full Installation (with DE stack)
-
-```bash
-pip install -e ".[dev,pipeline,distributed,orchestration]"
+pip install -e ".[all]"
 ```
 
 ## Quick Start
 
-### 1. Prepare Data
+### 1. Download NCBI Data
 
 ```bash
-python -m metapathpredict prepare \
-    --input data/input \
+python scripts/download_ncbi_data.py \
+    --output data/raw \
+    --num-sequences 20000 \
+    --fragment-size 500
+```
+
+### 2. Prepare Dataset (FASTA → HDF5)
+
+```bash
+metapathpredict prepare \
+    data/raw/bacteria_fragments.fasta \
+    data/raw/eukaryotic_fragments.fasta \
+    data/raw/virus_fragments.fasta \
     --output data/datasets/unified \
-    --fragment-size 1000
+    --length 500
 ```
 
-### 2. Train Model
-
-**Standard CNN:**
-```bash
-python -m metapathpredict train \
-    --config config.yaml \
-    --model-type unified
-```
-
-**Configurable CNN (kernel 5, 7, 10):**
-```bash
-# Small kernel (5)
-python -m metapathpredict train --model-type configurable_cnn --kernel-preset small
-
-# Medium kernel (7)
-python -m metapathpredict train --model-type configurable_cnn --kernel-preset medium
-
-# Large kernel (10)
-python -m metapathpredict train --model-type configurable_cnn --kernel-preset large
-
-# Multi-scale (5, 7, 10 parallel)
-python -m metapathpredict train --model-type configurable_cnn --kernel-preset multi
-```
-
-**Contrastive Learning:**
-```bash
-python -m metapathpredict train --model-type contrastive
-```
-
-**Reinforcement Learning:**
-```bash
-# DQN
-python -m metapathpredict train --model-type rl --rl-algorithm dqn
-
-# Policy Gradient (REINFORCE)
-python -m metapathpredict train --model-type rl --rl-algorithm policy_gradient
-
-# Actor-Critic
-python -m metapathpredict train --model-type rl --rl-algorithm actor_critic
-```
-
-### 3. Run Predictions
+### 3. Train (Full Pipeline)
 
 ```bash
-python -m metapathpredict predict \
-    --input data/input/test.fasta \
-    --output data/output/predictions \
-    --weights data/weights/unified/best_model.pt
+# CPU
+metapathpredict train --pipeline full --config configs/train_cpu.yaml
+
+# GPU
+metapathpredict train --pipeline full --config configs/train_gpu.yaml --device cuda
 ```
 
-## Training Approaches
+This runs:
+1. **Contrastive pretraining** — learns DNA representations via SupCon loss
+2. **RL fine-tuning** — transfers encoder weights to Actor-Critic agent
 
-### 1. Configurable CNN
+Checkpoints saved to `data/weights/unified/`:
+- `contrastive_best.pt` — best encoder
+- `rl_best.pt` — best RL agent
 
-CNN architecture with variable kernel sizes for capturing different k-mer patterns:
-
-| Preset | Kernel Size | Best For |
-|--------|-------------|----------|
-| `small` | 5 | Short motifs, rapid patterns |
-| `medium` | 7 | Balanced feature extraction |
-| `large` | 10 | Long-range dependencies |
-| `multi` | 5, 7, 10 | Multi-scale feature fusion |
-
-```python
-from metapathpredict.models import create_configurable_cnn
-
-model = create_configurable_cnn(
-    preset="multi",
-    in_channels=4,
-    num_classes=3,
-    hidden_channels=128,
-)
-```
-
-### 2. Contrastive Learning
-
-SimCLR-style self-supervised learning with DNA-specific augmentations:
-
-- Reverse complement
-- Random mutations
-- Random masking
-
-```python
-from metapathpredict.models import ContrastiveEncoder, NTXentLoss, SupConLoss
-
-encoder = ContrastiveEncoder(
-    in_channels=4,
-    embedding_dim=256,
-    projection_dim=128,
-)
-
-# Self-supervised
-loss_fn = NTXentLoss(temperature=0.5)
-
-# Supervised contrastive
-loss_fn = SupConLoss(temperature=0.5)
-```
-
-### 3. Deep Reinforcement Learning
-
-Sequence classification as a reinforcement learning problem:
-
-```python
-from metapathpredict.models import DQNAgent, PolicyGradientAgent, ActorCriticAgent
-
-# DQN with experience replay
-agent = DQNAgent(
-    state_dim=(4, 1000),
-    num_actions=3,
-    hidden_dim=128,
-)
-
-# Policy Gradient (REINFORCE)
-agent = PolicyGradientAgent(
-    state_dim=(4, 1000),
-    num_actions=3,
-)
-
-# Actor-Critic (A2C)
-agent = ActorCriticAgent(
-    state_dim=(4, 1000),
-    num_actions=3,
-)
-```
-
-## Data Engineering Stack
-
-### Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                        Dagster                               │
-│                   (Orchestration)                            │
-├─────────────────────────────────────────────────────────────┤
-│      Ray Cluster          │         DuckDB/DuckLake         │
-│   (Distributed Training)  │      (Analytics/Catalog)        │
-├─────────────────────────────────────────────────────────────┤
-│                     MinIO (S3 Storage)                       │
-│              Models | Datasets | Checkpoints                 │
-├─────────────────────────────────────────────────────────────┤
-│                      PostgreSQL                              │
-│                  (Metadata Catalog)                          │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Start DE Stack
+### 4. Predict
 
 ```bash
-# Basic stack
-docker-compose up -d
-
-# With monitoring (Prometheus + Grafana)
-docker-compose --profile monitoring up -d
-
-# With data governance (DataHub)
-docker-compose --profile governance up -d
+metapathpredict predict \
+    --input sequences.fasta \
+    --model data/weights/unified/rl_best.pt
 ```
 
-### Services
-
-| Service | Port | Description |
-|---------|------|-------------|
-| MinIO | 9000/9001 | S3-compatible storage |
-| PostgreSQL | 5432 | Metadata database |
-| Ray Dashboard | 8265 | Ray cluster UI |
-| Dagster UI | 3000 | Pipeline orchestration |
-| Prometheus | 9090 | Metrics collection |
-| Grafana | 3001 | Monitoring dashboards |
-
-### Distributed Training with Ray
-
-```python
-from metapathpredict.pipeline import RayTrainer, HyperparameterTuner
-
-# Distributed training
-trainer = RayTrainer(config_path="config.yaml")
-trainer.train(num_workers=4, use_gpu=True)
-
-# Hyperparameter tuning
-tuner = HyperparameterTuner()
-best_config = tuner.tune(num_samples=50)
-```
-
-### Run Dagster Pipeline
+### 5. Evaluate
 
 ```bash
-# Start Dagster UI
-dagster dev -m metapathpredict.pipeline.dagster_assets
-
-# Execute pipeline
-dagster job execute -m metapathpredict.pipeline.dagster_assets -j training_pipeline_job
+metapathpredict evaluate \
+    --model data/weights/unified/rl_best.pt \
+    --config configs/train_gpu.yaml
 ```
+
+## Training Pipelines
+
+| Pipeline | Command | Description |
+|----------|---------|-------------|
+| `full` | `--pipeline full` | Contrastive pretrain → RL fine-tune (default) |
+| `contrastive` | `--pipeline contrastive` | Contrastive pretraining only |
+| `rl` | `--pipeline rl` | RL training only (needs encoder checkpoint) |
+| `supervised` | `--pipeline supervised` | Legacy supervised CNN |
+
+## Architecture
+
+### Contrastive Learning (Phase 1)
+
+- **Backbone:** ConfigurableCNN (`small`/`medium`/`large` presets)
+- **Projection head:** 3-layer MLP with BatchNorm
+- **Loss:** NTXent (SimCLR) or SupCon (supervised contrastive)
+- **Augmentations:** Random mutation, random masking, reverse complement
+
+### Reinforcement Learning (Phase 2)
+
+- **Algorithms:** DQN, REINFORCE (Policy Gradient), Actor-Critic
+- **Weight transfer:** Encoder weights from contrastive phase → RL agent backbone (`strict=False`)
+- **Environment:** Each DNA fragment is a state, classification is the action
+
+### CNN Backbone Presets
+
+| Preset | Layers | Base Channels | Parameters |
+|--------|--------|---------------|------------|
+| `small` | 3 conv blocks | 64 | ~250K |
+| `medium` | 4 conv blocks | 64 | ~500K |
+| `large` | 5 conv blocks | 128 | ~2M |
 
 ## Configuration
 
-### YAML Configuration
+### CPU Config (`configs/train_cpu.yaml`)
 
 ```yaml
-# config.yaml
-paths:
-  data_dir: /app/data
-  weights_dir: /app/data/weights
+contrastive:
+  backbone: "medium"
+  num_epochs: 20
+  batch_size: 128
+  learning_rate: 0.001
 
-data:
-  sequence_length: 1000
-  batch_size: 64
-  train_split: 0.8
+rl:
+  algorithm: "actor_critic"
+  num_epochs: 10
+  episodes_per_epoch: 1000
+```
 
-model:
-  type: unified
-  kernel_preset: medium
+### GPU Config (`configs/train_gpu.yaml`)
+
+```yaml
+contrastive:
+  backbone: "large"
+  num_epochs: 50
+  batch_size: 512
+  learning_rate: 0.001
+
+rl:
+  algorithm: "actor_critic"
+  num_epochs: 30
+  episodes_per_epoch: 5000
 
 training:
-  epochs: 100
-  learning_rate: 0.001
-  use_mixed_precision: true
-  early_stopping_patience: 15
-
-pipeline:
-  storage:
-    endpoint_url: http://localhost:9000
-    bucket: metapathpredict
-  ray:
-    address: ray://localhost:10001
+  use_amp: true  # Mixed precision
 ```
+
+## Docker
+
+```bash
+# Full stack (MinIO + PostgreSQL + Ray + Dagster + App)
+docker compose up -d
+
+# CPU-only
+docker compose -f docker-compose.cpu.yml up -d
+
+# With monitoring (Prometheus + Grafana)
+docker compose --profile monitoring up -d
+```
+
+| Service | Port | Description |
+|---------|------|-------------|
+| App | 8000 | MetaPathPredict API |
+| MinIO | 9000/9001 | S3-compatible storage |
+| PostgreSQL | 5432 | Metadata catalog |
+| Ray Dashboard | 8265 | Distributed compute |
+| Dagster UI | 3000 | Pipeline orchestration |
+| Prometheus | 9090 | Metrics |
+| Grafana | 3001 | Dashboards |
+
+## Dashboard (Frontend)
+
+React + TypeScript dashboard for model interpretability:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Features: attribution heatmaps, prediction comparison, sequence viewer, motif analysis.
 
 ## Project Structure
 
 ```
 metapathpredict/
 ├── src/metapathpredict/
-│   ├── config/           # Pydantic configuration
-│   ├── data/             # Dataset & preprocessing
-│   │   ├── preprocessing.py
-│   │   ├── augmentation.py
-│   │   └── dataset.py
-│   ├── models/           # Neural network architectures
-│   │   ├── cnn.py
-│   │   ├── configurable_cnn.py
-│   │   ├── contrastive.py
-│   │   ├── reinforcement.py
-│   │   └── unified.py
-│   ├── training/         # Training logic
-│   │   ├── trainer.py
-│   │   ├── callbacks.py
-│   │   └── schedulers.py
-│   ├── inference/        # Prediction
-│   │   ├── predictor.py
-│   │   └── ensemble.py
-│   ├── pipeline/         # DE stack integration
-│   │   ├── duckdb_connector.py
-│   │   ├── storage.py
-│   │   ├── ray_training.py
-│   │   └── dagster_assets.py
-│   └── cli.py            # Command-line interface
-├── tests/                # Unit tests
-├── docker/               # Docker configurations
-├── config.yaml           # Default configuration
-├── docker-compose.yml    # DE stack deployment
-└── pyproject.toml        # Package configuration
+│   ├── models/
+│   │   ├── contrastive.py      # ContrastiveEncoder, NTXent, SupCon, augmentation
+│   │   ├── reinforcement.py    # DQN, PolicyGradient, ActorCritic, RLTrainer
+│   │   ├── configurable_cnn.py # Backbone CNN with presets
+│   │   └── unified.py          # Legacy supervised classifier
+│   ├── data/
+│   │   ├── dataset.py          # HDF5 dataset loaders
+│   │   ├── datamodule.py       # DataModule with train/val/test splits
+│   │   └── preprocessing.py    # One-hot encoding, fragmentation
+│   ├── training/               # Trainer, callbacks, tracking
+│   ├── api/                    # FastAPI backend
+│   ├── pipeline/               # Dagster assets
+│   ├── config/                 # Pydantic settings
+│   └── cli.py                  # CLI entry point
+├── frontend/                   # React dashboard
+├── configs/
+│   ├── train_cpu.yaml
+│   └── train_gpu.yaml
+├── scripts/
+│   └── download_ncbi_data.py   # NCBI data downloader
+├── docker/                     # Dockerfiles
+├── tests/                      # 184+ tests
+└── pyproject.toml
 ```
 
 ## Testing
 
 ```bash
-# Run all tests
+# All tests
 pytest
 
-# Run with coverage
-pytest --cov=src/metapathpredict --cov-report=html
+# With coverage
+pytest --cov=src/metapathpredict
 
-# Run specific test file
-pytest tests/test_models.py
-
-# Skip slow tests
-pytest -m "not slow"
+# Specific module
+pytest tests/test_contrastive.py
+pytest tests/test_reinforcement.py
+pytest tests/test_pipeline.py
 ```
 
-## Development
+## Python API
 
-### Code Quality
+```python
+from metapathpredict.models import (
+    ContrastiveEncoder,
+    ContrastiveTrainer,
+    ContrastiveAugmentation,
+    ActorCriticAgent,
+    RLTrainer,
+    SequenceEnvironment,
+)
 
-```bash
-# Lint
-ruff check src/
+# Contrastive pretraining
+encoder = ContrastiveEncoder(in_channels=4, backbone="medium")
+trainer = ContrastiveTrainer(encoder, optimizer, augmentation, temperature=0.07)
+loss = trainer.train_epoch(dataloader)
 
-# Format
-ruff format src/
-
-# Type check
-mypy src/metapathpredict
-```
-
-### Pre-commit Hooks
-
-```bash
-pip install pre-commit
-pre-commit install
-pre-commit run --all-files
-```
-
-## Performance Tips
-
-1. **Enable Mixed Precision**: Set `use_mixed_precision: true` in config
-2. **Use torch.compile**: Automatically enabled for PyTorch 2.0+
-3. **Increase Workers**: Set `num_workers: 4` or higher for data loading
-4. **Use Distributed Training**: Scale with Ray for multi-GPU/multi-node
-
-## Citation
-
-```bibtex
-@software{metapathpredict2026,
-  title = {MetaPathPredict: Modern DNA Sequence Classification},
-  author = {Your Name},
-  year = {2026},
-  url = {https://github.com/yourusername/metapathpredict}
-}
+# RL fine-tuning
+agent = ActorCriticAgent(in_channels=4, num_actions=3, backbone="medium")
+agent.load_state_dict(encoder_weights, strict=False)  # Transfer weights
+env = SequenceEnvironment(sequences, labels)
+rl_trainer = RLTrainer(agent, env, optimizer, algorithm="actor_critic")
+metrics = rl_trainer.train_epoch(num_episodes=1000)
 ```
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details.
+MIT License — see [LICENSE](LICENSE) for details.

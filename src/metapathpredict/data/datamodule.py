@@ -335,32 +335,48 @@ class SequenceDataModule:
     def from_config(cls, config: Settings) -> "SequenceDataModule":
         """
         Create DataModule from Settings configuration.
-        
+
+        If pre-split files (train/val/test) exist, uses them directly.
+        Otherwise falls back to loading a single train file and auto-splitting.
+
         Args:
             config: Settings object.
-        
+
         Returns:
             SequenceDataModule instance.
         """
         data_config = config.data
         paths = config.paths
         training_config = config.training
-        
-        # Determine dataset paths
-        train_path = paths.datasets_dir / f"encoded_train_{data_config.default_fragment_size}.hdf5"
-        test_path = paths.datasets_dir / f"encoded_test_{data_config.default_fragment_size}.hdf5"
-        
+
+        frag = data_config.default_fragment_size
+        train_path = paths.datasets_dir / f"encoded_train_{frag}.hdf5"
+        val_path = paths.datasets_dir / f"encoded_val_{frag}.hdf5"
+        test_path = paths.datasets_dir / f"encoded_test_{frag}.hdf5"
+
         if not train_path.exists():
             raise FileNotFoundError(f"Training dataset not found: {train_path}")
-        
-        # Setup augmentation
-        augmentation = None
-        if data_config.use_reverse_complement:
-            augmentation = SequenceAugmentation.default(
-                target_length=data_config.default_fragment_size
+
+        # If all three split files exist, use them directly
+        if val_path.exists() and test_path.exists():
+            train_dataset = HDF5SequenceDataset(str(train_path))
+            val_dataset = HDF5SequenceDataset(str(val_path))
+            test_dataset = HDF5SequenceDataset(str(test_path))
+
+            logger.info(
+                f"Using pre-split data: train={len(train_dataset)}, "
+                f"val={len(val_dataset)}, test={len(test_dataset)}"
             )
-        
-        # Use single HDF5 with auto-split since we don't have separate val set
+
+            return cls(
+                train_dataset=train_dataset,
+                val_dataset=val_dataset,
+                test_dataset=test_dataset,
+                batch_size=training_config.batch_size,
+                num_workers=data_config.num_workers,
+            )
+
+        # Fallback: single file with auto-split
         return cls.from_single_hdf5(
             hdf5_path=train_path,
             train_ratio=data_config.train_ratio,

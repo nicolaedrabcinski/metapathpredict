@@ -7,6 +7,7 @@ sequences by receiving rewards based on classification accuracy.
 
 from __future__ import annotations
 
+import copy
 import random
 from collections import deque
 from dataclasses import dataclass
@@ -427,12 +428,8 @@ class RLTrainer:
         self.target_agent = None
         
         if algorithm == "dqn":
-            # Create target network
-            self.target_agent = type(agent)(
-                in_channels=4,
-                num_actions=agent.num_actions,
-            ).to(device)
-            self.target_agent.load_state_dict(agent.state_dict())
+            # Create target network as exact copy of agent
+            self.target_agent = copy.deepcopy(agent).to(device)
     
     def train_episode_dqn(
         self,

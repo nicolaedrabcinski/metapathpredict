@@ -100,9 +100,17 @@ class TestNoOpTracker:
         tracker.end_run()
 
 
+try:
+    import duckdb
+    _HAS_DUCKDB = True
+except ImportError:
+    _HAS_DUCKDB = False
+
+
+@pytest.mark.skipif(not _HAS_DUCKDB, reason="duckdb not installed")
 class TestDuckDBTracker:
     """Tests for DuckDBTracker."""
-    
+
     @pytest.fixture
     def temp_db(self):
         """Create temporary database."""
@@ -235,6 +243,7 @@ class TestCreateTracker:
         
         assert isinstance(tracker, NoOpTracker)
     
+    @pytest.mark.skipif(not _HAS_DUCKDB, reason="duckdb not installed")
     def test_create_duckdb_tracker(self):
         """Test creating DuckDB tracker."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -390,6 +399,7 @@ class TestMLflowTrackerMocked:
         assert flat["lr"] == "0.001"
 
 
+@pytest.mark.skipif(not _HAS_DUCKDB, reason="duckdb not installed")
 class TestIntegrationDuckDB:
     """Integration tests for DuckDB tracker."""
     

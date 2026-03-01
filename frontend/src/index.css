@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #213547;
+  background-color: #f8fafc;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+/* Sequence display */
+.sequence-char {
+  font-family: 'Fira Code', 'Courier New', monospace;
+  font-size: 12px;
+}
+
+.nucleotide-A { color: #22c55e; }
+.nucleotide-T { color: #ef4444; }
+.nucleotide-G { color: #f59e0b; }
+.nucleotide-C { color: #3b82f6; }
+.nucleotide-N { color: #9ca3af; }
+
+/* Attribution heatmap */
+.attribution-positive {
+  background: linear-gradient(to right, transparent, #22c55e);
+}
+
+.attribution-negative {
+  background: linear-gradient(to right, transparent, #ef4444);
+}

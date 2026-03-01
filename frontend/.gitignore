@@ -1,0 +1,6 @@
+# Frontend
+
+node_modules/
+dist/
+.vite/
+*.log

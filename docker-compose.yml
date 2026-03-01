@@ -243,7 +243,7 @@ services:
       - minio
       - postgres
       - ray-head
-    command: python -m metapathpredict.cli train --config /app/config.yaml
+    command: python -m metapathpredict.cli train --pipeline full --config /app/configs/train_cpu.yaml
 
 volumes:
   minio_data:

@@ -7,22 +7,28 @@ robust sequence embeddings.
 
 from __future__ import annotations
 
+import logging
+import time
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
+from tqdm import tqdm
 
 from .base import BaseModel
 from .configurable_cnn import ConfigurableCNN
+
+logger = logging.getLogger(__name__)
 
 
 class ProjectionHead(nn.Module):
     """
     MLP projection head for contrastive learning.
-    
+
     Maps embeddings to a space where contrastive loss is applied.
     """
-    
+
     def __init__(
         self,
         in_dim: int,
@@ -31,14 +37,14 @@ class ProjectionHead(nn.Module):
     ):
         """
         Initialize projection head.
-        
+
         Args:
             in_dim: Input dimension.
             hidden_dim: Hidden layer dimension.
             out_dim: Output dimension.
         """
         super().__init__()
-        
+
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
             nn.BatchNorm1d(hidden_dim),
@@ -48,7 +54,13 @@ class ProjectionHead(nn.Module):
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, out_dim),
         )
-    
+
+        num_params = sum(p.numel() for p in self.parameters())
+        logger.debug(
+            f"ProjectionHead created: {in_dim} -> {hidden_dim} -> {hidden_dim} -> {out_dim} "
+            f"({num_params:,} params)"
+        )
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
         return self.net(x)
@@ -81,7 +93,13 @@ class ContrastiveEncoder(BaseModel):
             base_channels: Base channels for backbone.
         """
         super().__init__()
-        
+
+        logger.info(
+            f"Building ContrastiveEncoder: backbone={backbone}, "
+            f"in_channels={in_channels}, base_channels={base_channels}, "
+            f"projection_dim={projection_dim}, hidden_dim={hidden_dim}"
+        )
+
         # Backbone encoder (without classifier)
         self.encoder = ConfigurableCNN(
             in_channels=in_channels,
@@ -89,19 +107,28 @@ class ContrastiveEncoder(BaseModel):
             kernel_preset=backbone,
             base_channels=base_channels,
         )
-        
+
         # Get embedding dimension
         embed_dim = self.encoder._final_channels
-        
+        logger.info(f"  CNN backbone: embed_dim={embed_dim}")
+
         # Projection head
         self.projection = ProjectionHead(
             in_dim=embed_dim,
             hidden_dim=hidden_dim,
             out_dim=projection_dim,
         )
-        
+
         self.embed_dim = embed_dim
         self.projection_dim = projection_dim
+
+        encoder_params = sum(p.numel() for p in self.encoder.parameters())
+        proj_params = sum(p.numel() for p in self.projection.parameters())
+        total_params = sum(p.numel() for p in self.parameters())
+        logger.info(
+            f"  Params: encoder={encoder_params:,}, projection={proj_params:,}, "
+            f"total={total_params:,}"
+        )
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -125,19 +152,21 @@ class ContrastiveEncoder(BaseModel):
 class NTXentLoss(nn.Module):
     """
     Normalized Temperature-scaled Cross Entropy Loss (NT-Xent).
-    
+
     The contrastive loss used in SimCLR.
     """
-    
+
     def __init__(self, temperature: float = 0.5):
         """
         Initialize NT-Xent loss.
-        
+
         Args:
             temperature: Temperature scaling factor.
         """
         super().__init__()
         self.temperature = temperature
+        self._call_count = 0
+        logger.info(f"NTXentLoss initialized: temperature={temperature}")
     
     def forward(
         self,
@@ -176,18 +205,31 @@ class NTXentLoss(nn.Module):
         
         # Cross entropy loss
         loss = F.cross_entropy(sim, labels)
-        
+
+        self._call_count += 1
+        if self._call_count == 1:
+            # Log detailed diagnostics on the very first batch
+            with torch.no_grad():
+                pos_sim = torch.sum(z_i * z_j, dim=1)  # cosine sim of positive pairs
+                logger.info(
+                    f"  [NTXent first batch] batch_size={batch_size}, "
+                    f"sim_matrix=[{2*batch_size}x{2*batch_size}], "
+                    f"pos_cosine_sim: mean={pos_sim.mean():.4f}, "
+                    f"min={pos_sim.min():.4f}, max={pos_sim.max():.4f}, "
+                    f"loss={loss.item():.4f}"
+                )
+
         return loss
 
 
 class SupConLoss(nn.Module):
     """
     Supervised Contrastive Loss.
-    
+
     Extends contrastive learning to use label information,
     pulling together samples from the same class.
     """
-    
+
     def __init__(
         self,
         temperature: float = 0.07,
@@ -195,7 +237,7 @@ class SupConLoss(nn.Module):
     ):
         """
         Initialize SupCon loss.
-        
+
         Args:
             temperature: Temperature for scaling.
             base_temperature: Base temperature for normalization.
@@ -203,6 +245,11 @@ class SupConLoss(nn.Module):
         super().__init__()
         self.temperature = temperature
         self.base_temperature = base_temperature
+        self._call_count = 0
+        logger.info(
+            f"SupConLoss initialized: temperature={temperature}, "
+            f"base_temperature={base_temperature}"
+        )
     
     def forward(
         self,
@@ -260,7 +307,21 @@ class SupConLoss(nn.Module):
         
         # Loss
         loss = -mean_log_prob.mean() * (self.temperature / self.base_temperature)
-        
+
+        self._call_count += 1
+        if self._call_count == 1:
+            # Detailed diagnostics on the first batch
+            unique_labels = torch.unique(labels.squeeze())
+            avg_pos_pairs = mask_pos.sum(dim=1).mean().item()
+            sim_diag = sim.diag()
+            logger.info(
+                f"  [SupCon first batch] batch_size={batch_size}, n_views={n_views}, "
+                f"classes={len(unique_labels)}, "
+                f"avg_pos_pairs={avg_pos_pairs:.1f}, "
+                f"sim: mean={sim.mean():.4f}, max={sim.max():.4f}, "
+                f"loss={loss.item():.4f}"
+            )
+
         return loss
 
 
@@ -287,6 +348,11 @@ class ContrastiveAugmentation(nn.Module):
         self.mutation_rate = mutation_rate
         self.mask_rate = mask_rate
         self.crop_ratio = crop_ratio
+        self._call_count = 0
+        logger.info(
+            f"ContrastiveAugmentation: mutation_rate={mutation_rate}, "
+            f"mask_rate={mask_rate}, crop_ratio={crop_ratio}"
+        )
     
     def random_mutation(self, x: torch.Tensor) -> torch.Tensor:
         """Apply random mutations."""
@@ -327,13 +393,28 @@ class ContrastiveAugmentation(nn.Module):
         """
         # View 1: mutation + optional RC
         view1 = self.random_mutation(x)
+        used_rc = False
         if torch.rand(1).item() > 0.5:
             view1 = self.reverse_complement(view1)
-        
+            used_rc = True
+
         # View 2: mask + mutation
         view2 = self.random_mask(x)
         view2 = self.random_mutation(view2)
-        
+
+        self._call_count += 1
+        if self._call_count == 1:
+            # Log detailed augmentation info on first call
+            diff1 = (view1 - x).abs().sum().item() / x.numel()
+            diff2 = (view2 - x).abs().sum().item() / x.numel()
+            masked_frac = (view2.sum(dim=1) == 0).float().mean().item()
+            logger.info(
+                f"  [Augmentation first batch] input={list(x.shape)}, "
+                f"view1_diff={diff1:.4f} (RC={used_rc}), "
+                f"view2_diff={diff2:.4f}, "
+                f"view2_masked_frac={masked_frac:.4f}"
+            )
+
         return view1, view2
 
 
@@ -366,73 +447,203 @@ class ContrastiveTrainer:
         self.optimizer = optimizer
         self.augmentation = augmentation or ContrastiveAugmentation()
         self.device = device
-        
+
         if use_supervised:
             self.criterion = SupConLoss(temperature=temperature)
         else:
             self.criterion = NTXentLoss(temperature=temperature)
-        
+
         self.use_supervised = use_supervised
+        self._epoch_count = 0
+
+        loss_name = "SupConLoss" if use_supervised else "NTXentLoss"
+        logger.info(
+            f"ContrastiveTrainer initialized: loss={loss_name}, "
+            f"temperature={temperature}, device={device}"
+        )
     
     def train_epoch(self, dataloader: DataLoader) -> float:
         """Train for one epoch."""
+        self._epoch_count += 1
         self.encoder.train()
         total_loss = 0.0
-        
-        for batch in dataloader:
+        num_batches = len(dataloader)
+
+        # Track stats across epoch
+        all_grad_norms = []
+        all_losses = []
+        all_pos_sims = []
+        all_neg_sims = []
+        all_emb_stds = []
+        min_loss = float("inf")
+        max_loss = float("-inf")
+
+        # Current LR
+        current_lr = self.optimizer.param_groups[0]["lr"]
+        logger.info(
+            f"  Epoch {self._epoch_count} start: lr={current_lr:.2e}, "
+            f"{num_batches} batches"
+        )
+
+        t0 = time.time()
+        pbar = tqdm(
+            enumerate(dataloader),
+            total=num_batches,
+            desc=f"Contrastive Epoch {self._epoch_count}",
+            unit="batch",
+            bar_format=(
+                "{l_bar}{bar}| {n_fmt}/{total_fmt} "
+                "[{elapsed}<{remaining}, {rate_fmt}] "
+                "{postfix}"
+            ),
+        )
+
+        for batch_idx, batch in pbar:
+            t_batch = time.time()
+
             if isinstance(batch, (list, tuple)):
                 x = batch[0].to(self.device)
                 labels = batch[1].to(self.device) if len(batch) > 1 else None
             else:
                 x = batch.to(self.device)
                 labels = None
-            
+
             # Generate augmented views
             view1, view2 = self.augmentation(x)
-            
+
             # Get projections
             z1 = self.encoder(view1)
             z2 = self.encoder(view2)
-            
+
+            # Compute similarity stats (before loss, for monitoring)
+            with torch.no_grad():
+                # Positive pair cosine similarity
+                pos_sim = F.cosine_similarity(z1, z2, dim=1)
+                pos_sim_mean = pos_sim.mean().item()
+                all_pos_sims.append(pos_sim_mean)
+
+                # Negative pair similarity (mean of off-diagonal)
+                sim_matrix = torch.mm(z1, z2.t())
+                eye_mask = ~torch.eye(z1.size(0), device=z1.device, dtype=torch.bool)
+                neg_sim = sim_matrix[eye_mask].mean().item()
+                all_neg_sims.append(neg_sim)
+
+                # Embedding std (collapse detection: std -> 0 means collapse)
+                emb_std = z1.std(dim=0).mean().item()
+                all_emb_stds.append(emb_std)
+
             # Compute loss
             if self.use_supervised and labels is not None:
                 features = torch.stack([z1, z2], dim=1)
                 loss = self.criterion(features, labels)
             else:
                 loss = self.criterion(z1, z2)
-            
+
             # Backward
             self.optimizer.zero_grad()
             loss.backward()
+
+            # Gradient norm for monitoring
+            grad_norm = 0.0
+            max_grad = 0.0
+            for p in self.encoder.parameters():
+                if p.grad is not None:
+                    pnorm = p.grad.data.norm(2).item()
+                    grad_norm += pnorm ** 2
+                    max_grad = max(max_grad, p.grad.data.abs().max().item())
+            grad_norm = grad_norm ** 0.5
+            all_grad_norms.append(grad_norm)
+
             self.optimizer.step()
-            
-            total_loss += loss.item()
-        
-        return total_loss / len(dataloader)
+
+            batch_loss = loss.item()
+            total_loss += batch_loss
+            all_losses.append(batch_loss)
+            min_loss = min(min_loss, batch_loss)
+            max_loss = max(max_loss, batch_loss)
+
+            # Update tqdm postfix
+            avg_loss = total_loss / (batch_idx + 1)
+            pbar.set_postfix(
+                loss=f"{batch_loss:.4f}",
+                avg=f"{avg_loss:.4f}",
+                pos=f"{pos_sim_mean:.3f}",
+                neg=f"{neg_sim:.3f}",
+                grad=f"{grad_norm:.2f}",
+                std=f"{emb_std:.4f}",
+            )
+
+        pbar.close()
+
+        # Epoch summary
+        avg_loss = total_loss / num_batches
+        epoch_time = time.time() - t0
+        throughput = num_batches * x.size(0) / epoch_time
+
+        avg_grad = sum(all_grad_norms) / len(all_grad_norms)
+        avg_pos_sim = sum(all_pos_sims) / len(all_pos_sims)
+        avg_neg_sim = sum(all_neg_sims) / len(all_neg_sims)
+        avg_emb_std = sum(all_emb_stds) / len(all_emb_stds)
+
+        logger.info(
+            f"  Epoch {self._epoch_count} summary: "
+            f"avg_loss={avg_loss:.6f} (min={min_loss:.4f}, max={max_loss:.4f})"
+        )
+        logger.info(
+            f"    Similarity: pos={avg_pos_sim:.4f}, neg={avg_neg_sim:.4f}, "
+            f"gap={avg_pos_sim - avg_neg_sim:.4f}"
+        )
+        logger.info(
+            f"    Gradients: avg_norm={avg_grad:.4f}, "
+            f"max_norm={max(all_grad_norms):.4f}"
+        )
+        logger.info(
+            f"    Embedding std={avg_emb_std:.4f} "
+            f"{'(WARNING: possible collapse!)' if avg_emb_std < 0.01 else '(healthy)'}"
+        )
+        logger.info(
+            f"    Throughput: {throughput:.0f} samples/s, {epoch_time:.1f}s total"
+        )
+
+        return avg_loss
     
     def get_embeddings(self, dataloader: DataLoader) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract embeddings for downstream tasks."""
         self.encoder.eval()
-        
+        logger.info("Extracting embeddings...")
+
         all_embeddings = []
         all_labels = []
-        
+        num_batches = len(dataloader)
+
+        t0 = time.time()
         with torch.no_grad():
-            for batch in dataloader:
+            for batch in tqdm(
+                dataloader,
+                total=num_batches,
+                desc="Extracting embeddings",
+                unit="batch",
+            ):
                 if isinstance(batch, (list, tuple)):
                     x = batch[0].to(self.device)
                     labels = batch[1] if len(batch) > 1 else None
                 else:
                     x = batch.to(self.device)
                     labels = None
-                
+
                 embeddings = self.encoder.get_embeddings(x)
                 all_embeddings.append(embeddings.cpu())
-                
+
                 if labels is not None:
                     all_labels.append(labels)
-        
+
         embeddings = torch.cat(all_embeddings, dim=0)
         labels = torch.cat(all_labels, dim=0) if all_labels else None
-        
+
+        elapsed = time.time() - t0
+        logger.info(
+            f"Embeddings extracted: {embeddings.shape[0]} samples, "
+            f"dim={embeddings.shape[1]}, {elapsed:.1f}s"
+        )
+
         return embeddings, labels

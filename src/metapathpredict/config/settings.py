@@ -99,7 +99,7 @@ class PathConfig(BaseModel):
     
     def make_absolute(self, base: Path | None = None) -> "PathConfig":
         """Convert all paths to absolute paths relative to base."""
-        base = base or self.base_dir
+        base = (base or self.base_dir).resolve()
         data = {}
         for field_name, field_value in self:
             if isinstance(field_value, Path) and not field_value.is_absolute():
@@ -276,6 +276,71 @@ class TrainingConfig(BaseModel):
     class_weights: list[float] | None = Field(default=None)
 
 
+class ContrastiveConfig(BaseModel):
+    """Configuration for contrastive learning phase."""
+
+    # Encoder
+    backbone: Literal["small", "medium", "large", "progressive", "multi"] = Field(
+        default="medium", description="CNN backbone preset for ContrastiveEncoder"
+    )
+    base_channels: int = Field(default=64, ge=16)
+    projection_dim: int = Field(default=128, ge=32)
+    hidden_dim: int = Field(default=256, ge=64)
+
+    # Loss
+    loss_type: Literal["ntxent", "supcon"] = Field(
+        default="supcon", description="ntxent = SimCLR unsupervised, supcon = supervised contrastive"
+    )
+    temperature: float = Field(default=0.07, gt=0, le=1.0)
+
+    # Augmentation
+    mutation_rate: float = Field(default=0.1, ge=0.0, le=0.5)
+    mask_rate: float = Field(default=0.15, ge=0.0, le=0.5)
+
+    # Training
+    num_epochs: int = Field(default=20, ge=1)
+    learning_rate: float = Field(default=1e-3, gt=0)
+    weight_decay: float = Field(default=1e-4, ge=0)
+    batch_size: int = Field(default=128, ge=1)
+
+
+class RLConfig(BaseModel):
+    """Configuration for reinforcement learning phase."""
+
+    # Agent
+    algorithm: Literal["dqn", "policy_gradient", "actor_critic"] = Field(
+        default="actor_critic"
+    )
+    backbone: Literal["small", "medium", "large", "progressive", "multi"] = Field(
+        default="medium"
+    )
+    hidden_dim: int = Field(default=256, ge=64)
+
+    # Environment rewards
+    reward_correct: float = Field(default=1.0)
+    reward_incorrect: float = Field(default=-0.5)
+    reward_uncertain: float = Field(default=-0.1)
+
+    # Training
+    num_epochs: int = Field(default=10, ge=1)
+    episodes_per_epoch: int = Field(default=1000, ge=100)
+    learning_rate: float = Field(default=1e-4, gt=0)
+    weight_decay: float = Field(default=1e-4, ge=0)
+    gamma: float = Field(default=0.99, ge=0, le=1.0)
+
+    # DQN-specific
+    epsilon_start: float = Field(default=1.0, ge=0, le=1.0)
+    epsilon_end: float = Field(default=0.05, ge=0, le=1.0)
+    epsilon_decay_epochs: int = Field(default=5, ge=1)
+    replay_buffer_size: int = Field(default=10000, ge=1000)
+    target_update_freq: int = Field(default=5, ge=1)
+
+    # Transfer learning
+    load_encoder_from: str | None = Field(
+        default=None, description="Path to contrastive checkpoint to initialize encoder weights"
+    )
+
+
 class InferenceConfig(BaseModel):
     """Configuration for model inference."""
     
@@ -315,6 +380,8 @@ class Settings(BaseModel):
     data: DataConfig = Field(default_factory=DataConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
+    contrastive: ContrastiveConfig = Field(default_factory=ContrastiveConfig)
+    rl: RLConfig = Field(default_factory=RLConfig)
     inference: InferenceConfig = Field(default_factory=InferenceConfig)
     
     # Runtime settings
