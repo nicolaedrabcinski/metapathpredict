@@ -30,9 +30,14 @@ from metapathpredict.api.services.sample_service import SampleService
 
 logger = logging.getLogger(__name__)
 
-# Model weights path
+# Model weights path. The training pipeline (cli.py _train_contrastive/_train_rl)
+# writes contrastive_best.pt / contrastive_final.pt / rl_best.pt / rl_final.pt —
+# never best_model.pth or final_model.pth (that was this service's old, wrong
+# assumption, and meant _get_interpreter always failed and silently fell back
+# to a GC-content heuristic presented to the dashboard as real attributions).
 WEIGHTS_DIR = Path("/app/data/weights/unified")
-DEFAULT_WEIGHTS = WEIGHTS_DIR / "best_model.pth"
+DEFAULT_WEIGHTS = WEIGHTS_DIR / "rl_best.pt"
+FRAGMENT_SIZE = 500
 
 
 class AttributionService:
@@ -74,20 +79,25 @@ class AttributionService:
                 
                 weights_path = str(DEFAULT_WEIGHTS)
                 if not DEFAULT_WEIGHTS.exists():
-                    # Try alternative paths
+                    # Fall back through the other checkpoints the pipeline produces,
+                    # preferring the RL-fine-tuned agent over contrastive-only ones
+                    # (only the former has a trained classification head — see the
+                    # linear-probe fix, contrastive checkpoints have a real head too
+                    # now, but the RL one is trained for classification specifically).
                     alt_paths = [
-                        Path("/app/data/weights/unified/final_model.pth"),
-                        Path("data/weights/unified/best_model.pth"),
+                        WEIGHTS_DIR / "rl_final.pt",
+                        WEIGHTS_DIR / "contrastive_best.pt",
+                        WEIGHTS_DIR / "contrastive_final.pt",
                     ]
                     for alt in alt_paths:
                         if alt.exists():
                             weights_path = str(alt)
                             break
-                
+
                 self._interpreter = load_model_for_interpretation(
                     weights_path=weights_path,
                     device="cpu",  # Use CPU for interpretability (gradient computation)
-                    seq_length=1000,
+                    seq_length=FRAGMENT_SIZE,
                 )
                 self._model_loaded = True
                 logger.info("Model interpreter loaded successfully")
