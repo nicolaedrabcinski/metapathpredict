@@ -383,9 +383,11 @@ class TestCheckpointingIntegration:
         model1.eval()
         model2.eval()
         
+        X_eval = X.to(trainer1.device)
+
         with torch.no_grad():
-            out1 = model1(X)
-            out2 = model2(X)
+            out1 = model1(X_eval)
+            out2 = model2(X_eval)
         
         torch.testing.assert_close(out1, out2)
         
