@@ -382,41 +382,45 @@ class ContrastiveAugmentation(nn.Module):
         return x
     
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-        """
-        Generate two augmented views.
-        
-        Args:
-            x: Input tensor [batch, channels, length].
-        
-        Returns:
-            Tuple of two augmented views.
-        """
-        # View 1: mutation + optional RC
-        view1 = self.random_mutation(x)
-        used_rc = False
+        # View 1: crop -> mutation -> optional reverse complement
+        view1 = self.random_crop(x)
+        view1 = self.random_mutation(view1)
         if torch.rand(1).item() > 0.5:
             view1 = self.reverse_complement(view1)
-            used_rc = True
 
-        # View 2: mask + mutation
-        view2 = self.random_mask(x)
+        # View 2: crop -> mask -> mutation
+        view2 = self.random_crop(x)
+        view2 = self.random_mask(view2)
         view2 = self.random_mutation(view2)
 
+        # Логирование (оставить как есть)
         self._call_count += 1
         if self._call_count == 1:
-            # Log detailed augmentation info on first call
             diff1 = (view1 - x).abs().sum().item() / x.numel()
             diff2 = (view2 - x).abs().sum().item() / x.numel()
             masked_frac = (view2.sum(dim=1) == 0).float().mean().item()
             logger.info(
                 f"  [Augmentation first batch] input={list(x.shape)}, "
-                f"view1_diff={diff1:.4f} (RC={used_rc}), "
-                f"view2_diff={diff2:.4f}, "
+                f"view1_diff={diff1:.4f}, view2_diff={diff2:.4f}, "
                 f"view2_masked_frac={masked_frac:.4f}"
             )
 
         return view1, view2
 
+    def random_crop(self, x: torch.Tensor) -> torch.Tensor:
+        """Случайное вырезание подпоследовательности с дополнением нулями."""
+        batch_size, channels, seq_len = x.shape
+        # Случайная длина обрезки в пределах crop_ratio
+        crop_len = int(seq_len * torch.empty(1).uniform_(*self.crop_ratio).item())
+        # Случайная позиция начала окна
+        start = torch.randint(0, seq_len - crop_len + 1, (1,)).item()
+        # Вырезаем
+        cropped = x[:, :, start:start + crop_len]
+        # Дополняем нулями до исходной длины (случайное расположение окна внутри)
+        pad_left = torch.randint(0, seq_len - crop_len + 1, (1,)).item()
+        pad_right = seq_len - crop_len - pad_left
+        padded = F.pad(cropped, (pad_left, pad_right), mode='constant', value=0)
+        return padded
 
 class ContrastiveTrainer:
     """
