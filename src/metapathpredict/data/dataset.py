@@ -261,7 +261,7 @@ class HDF5SequenceDataset(Dataset):
     @property
     def seq_length(self) -> int:
         """Get sequence length."""
-        return self._shape[1]
+        return self._shape[2]
     
     @property
     def num_classes(self) -> int:
@@ -331,8 +331,8 @@ class InMemoryHDF5Dataset(Dataset):
     
     @property
     def seq_length(self) -> int:
-        return self.sequences.shape[1]
-    
+        return self.sequences.shape[2]
+
     @property
     def num_classes(self) -> int:
         return self.metadata.get("num_classes", 3)

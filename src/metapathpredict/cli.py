@@ -991,6 +991,12 @@ def prepare_command(args: argparse.Namespace) -> int:
                     compression="gzip",
                 )
 
+                # HDF5SequenceDataset.num_classes reads these attrs (falling back
+                # to 3 when absent); previously nothing ever set them, so a non-3
+                # class dataset would silently misreport its class count.
+                dst.attrs["num_classes"] = 3
+                dst.attrs["sequence_length"] = sequence_length
+
                 written = 0
                 for start in range(0, n, read_chunk):
                     end = min(start + read_chunk, n)
