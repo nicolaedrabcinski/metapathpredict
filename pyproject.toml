@@ -92,7 +92,7 @@ tracking = [
     "wandb>=0.16.0",
 ]
 all = [
-    "metapathpredict[dev,api,viz,pipeline,distributed,orchestration,docs,tracking]",
+    "metapathpredict[dev,api,viz,pipeline,distributed,orchestration,docs,tracking,experiments]",
 ]
 
 [project.scripts]
