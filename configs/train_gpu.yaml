@@ -4,66 +4,47 @@
 # Data configuration
 data:
   default_fragment_size: 500
-  num_workers: 8
-  train_ratio: 0.8
-  val_ratio: 0.1
-  test_ratio: 0.1
-
-# Model configuration (legacy supervised CNN)
-model:
-  model_type: "multi_scale_cnn"
-  num_classes: 3
-  kernel_sizes: [5, 7, 11]
-  num_filters: [64, 128, 256]
-  hidden_dims: [512, 256]
-  dropout_rate: 0.3
-  use_batch_norm: true
-
-# Training configuration
-training:
-  num_epochs: 30
-  batch_size: 512
-  learning_rate: 0.002
-  weight_decay: 0.0001
-  optimizer: "adamw"
-  scheduler: "cosine"
-  warmup_epochs: 3
-  use_amp: true
-  gradient_clip_val: 1.0
-  patience: 10
+  num_workers: 4
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
 
 # Contrastive learning configuration
 contrastive:
   backbone: "large"
   base_channels: 128
-  projection_dim: 256
-  hidden_dim: 512
-  loss_type: "supcon"
+  projection_dim: 512
+  hidden_dim: 1024
+  loss_type: "ntxent"
   temperature: 0.07
-  mutation_rate: 0.1
-  mask_rate: 0.15
-  num_epochs: 50
-  learning_rate: 0.001
+  mutation_rate: 0.3
+  mask_rate: 0.3
+  num_epochs: 3
+  learning_rate: 0.0001
   weight_decay: 0.0001
-  batch_size: 512
+  batch_size: 2048
+
+scheduler:
+  name: cosine
+  warmup_epochs: 2
 
 # Reinforcement learning configuration
 rl:
   algorithm: "actor_critic"
   backbone: "large"
-  hidden_dim: 512
+  hidden_dim: 256
   reward_correct: 1.0
   reward_incorrect: -0.5
   reward_uncertain: -0.1
-  num_epochs: 30
-  episodes_per_epoch: 5000
+  num_epochs: 5
+  episodes_per_epoch: 4000
   learning_rate: 0.0001
   weight_decay: 0.0001
   gamma: 0.99
   epsilon_start: 1.0
-  epsilon_end: 0.01
-  epsilon_decay_epochs: 15
-  replay_buffer_size: 50000
+  epsilon_end: 0.05
+  epsilon_decay_epochs: 5
+  replay_buffer_size: 10000
   target_update_freq: 5
 
 # Project settings
@@ -74,7 +55,7 @@ experiment_name: "gpu-training"
 paths:
   base_dir: "."
   data_dir: "data"
-  datasets_dir: "data/datasets/unified"
-  weights_dir: "data/weights/unified"
+  datasets_dir: "data/datasets/unified_medium"
+  weights_dir: "data/weights/unified_medium"
   predictions_dir: "data/output/predictions"
   logs_dir: "logs"
