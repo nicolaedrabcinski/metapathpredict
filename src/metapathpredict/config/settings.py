@@ -324,6 +324,10 @@ class RLConfig(BaseModel):
     # Training
     num_epochs: int = Field(default=10, ge=1)
     episodes_per_epoch: int = Field(default=1000, ge=100)
+    batch_size: int = Field(
+        default=32, ge=1,
+        description="Episodes per gradient update for actor_critic (reduces update variance vs. 1)",
+    )
     learning_rate: float = Field(default=1e-4, gt=0)
     weight_decay: float = Field(default=1e-4, ge=0)
     gamma: float = Field(default=0.99, ge=0, le=1.0)

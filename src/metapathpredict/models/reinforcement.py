@@ -142,6 +142,35 @@ class SequenceEnvironment:
         
         return next_state, reward, done, info
 
+    def sample_batch(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Sample a batch of independent single-step episodes at once.
+
+        Vectorized counterpart to reset()+step() for algorithms (actor-critic)
+        that update on a batch of episodes rather than one at a time.
+
+        Args:
+            batch_size: Number of episodes to sample.
+
+        Returns:
+            (states, true_labels, rewards) — rewards assume full confidence (1.0),
+            matching the default confidence used by the non-batched step() path.
+        """
+        idx = torch.randint(0, self.num_samples, (batch_size,))
+        states = self.sequences[idx]
+        true_labels = self.labels[idx]
+        return states, true_labels, idx
+
+    def compute_rewards(self, actions: torch.Tensor, true_labels: torch.Tensor) -> torch.Tensor:
+        """Vectorized reward computation matching step()'s logic at confidence=1.0."""
+        correct = actions == true_labels
+        rewards = torch.where(
+            correct,
+            torch.full_like(actions, 0, dtype=torch.float32) + self.reward_correct,
+            torch.full_like(actions, 0, dtype=torch.float32) + self.reward_incorrect,
+        )
+        return rewards
+
 
 class DQNAgent(BaseModel):
     """
@@ -154,23 +183,26 @@ class DQNAgent(BaseModel):
         num_actions: int = 3,
         backbone: str = "medium",
         hidden_dim: int = 256,
+        base_channels: int = 64,
     ):
         """
         Initialize DQN agent.
-        
+
         Args:
             in_channels: Input channels.
             num_actions: Number of actions (classes).
             backbone: CNN backbone preset.
             hidden_dim: Hidden dimension for Q-network.
+            base_channels: Base channel count (must match contrastive encoder for weight transfer).
         """
         super().__init__()
-        
+
         # Feature extractor
         self.encoder = ConfigurableCNN(
             in_channels=in_channels,
             num_classes=num_actions,
             kernel_preset=backbone,
+            base_channels=base_channels,
         )
         
         embed_dim = self.encoder._final_channels
@@ -243,22 +275,25 @@ class PolicyGradientAgent(BaseModel):
         num_actions: int = 3,
         backbone: str = "medium",
         hidden_dim: int = 256,
+        base_channels: int = 64,
     ):
         """
         Initialize policy gradient agent.
-        
+
         Args:
             in_channels: Input channels.
             num_actions: Number of actions.
             backbone: CNN backbone preset.
             hidden_dim: Hidden dimension.
+            base_channels: Base channel count (must match contrastive encoder for weight transfer).
         """
         super().__init__()
-        
+
         self.encoder = ConfigurableCNN(
             in_channels=in_channels,
             num_classes=num_actions,
             kernel_preset=backbone,
+            base_channels=base_channels,
         )
         
         embed_dim = self.encoder._final_channels
@@ -327,6 +362,7 @@ class ActorCriticAgent(BaseModel):
         num_actions: int = 3,
         backbone: str = "medium",
         hidden_dim: int = 256,
+        base_channels: int = 64,
     ):
         """Initialize actor-critic agent."""
         super().__init__()
@@ -336,6 +372,7 @@ class ActorCriticAgent(BaseModel):
             in_channels=in_channels,
             num_classes=num_actions,
             kernel_preset=backbone,
+            base_channels=base_channels,
         )
         
         embed_dim = self.encoder._final_channels
@@ -547,16 +584,66 @@ class RLTrainer:
             "loss": loss.item(),
         }
     
+    def train_batch_actor_critic(self, batch_size: int) -> dict[str, float]:
+        """
+        Train one Actor-Critic update on a batch of independent episodes.
+
+        Vectorizes what train_episode_actor_critic does one sample at a time:
+        a single forward/backward/optimizer step over `batch_size` episodes
+        instead of `batch_size` separate single-sample updates. This cuts
+        gradient variance the same way minibatch SGD does over single-sample SGD.
+        """
+        states, true_labels, _ = self.env.sample_batch(batch_size)
+        states = states.to(self.device)
+        true_labels = true_labels.to(self.device)
+
+        actions, log_probs, entropy, values = self.agent.get_action_and_value(states)
+        rewards = self.env.compute_rewards(actions, true_labels).to(self.device)
+
+        advantage = rewards - values.detach()
+        actor_loss = -(log_probs * advantage).mean()
+        critic_loss = F.mse_loss(values, rewards)
+        entropy_loss = -0.01 * entropy.mean()
+
+        loss = actor_loss + 0.5 * critic_loss + entropy_loss
+
+        self.optimizer.zero_grad()
+        loss.backward()
+        self.optimizer.step()
+
+        correct = (actions == true_labels).float().mean().item()
+
+        return {
+            "reward": rewards.mean().item(),
+            "correct": correct,
+            "loss": loss.item(),
+        }
+
     def train_epoch(
         self,
         num_episodes: int = 1000,
         epsilon: float = 0.1,
+        batch_size: int = 1,
     ) -> dict[str, float]:
-        """Train for multiple episodes."""
+        """Train for multiple episodes (or batched updates, for actor-critic)."""
         total_reward = 0.0
-        total_correct = 0
+        total_correct = 0.0
         total_loss = 0.0
-        
+
+        if self.algorithm == "actor_critic" and batch_size > 1:
+            num_updates = max(num_episodes // batch_size, 1)
+            for _ in range(num_updates):
+                result = self.train_batch_actor_critic(batch_size)
+                total_reward += result["reward"]
+                total_correct += result["correct"]
+                total_loss += result["loss"]
+
+            return {
+                "avg_reward": total_reward / num_updates,
+                "accuracy": total_correct / num_updates,
+                "avg_loss": total_loss / num_updates,
+            }
+
         for _ in range(num_episodes):
             if self.algorithm == "dqn":
                 result = self.train_episode_dqn(epsilon=epsilon)
@@ -564,11 +651,11 @@ class RLTrainer:
                 result = self.train_episode_policy_gradient()
             else:
                 result = self.train_episode_actor_critic()
-            
+
             total_reward += result["reward"]
             total_correct += result["correct"]
             total_loss += result["loss"]
-        
+
         return {
             "avg_reward": total_reward / num_episodes,
             "accuracy": total_correct / num_episodes,

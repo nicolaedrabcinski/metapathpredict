@@ -292,6 +292,7 @@ def _train_rl(settings, device, data_module, output_dir,
     logger.info(f"  Algorithm:           {cfg.algorithm}")
     logger.info(f"  Backbone:            {cfg.backbone}")
     logger.info(f"  Hidden dim:          {cfg.hidden_dim}")
+    logger.info(f"  Batch size:          {cfg.batch_size}")
     logger.info(f"  Epochs:              {cfg.num_epochs}")
     logger.info(f"  Episodes/epoch:      {cfg.episodes_per_epoch}")
     logger.info(f"  Learning rate:       {cfg.learning_rate}")
@@ -336,6 +337,7 @@ def _train_rl(settings, device, data_module, output_dir,
         num_actions=settings.model.num_classes,
         backbone=cfg.backbone,
         hidden_dim=cfg.hidden_dim,
+        base_channels=settings.contrastive.base_channels,
     )
     agent.to(device)
 
@@ -407,6 +409,7 @@ def _train_rl(settings, device, data_module, output_dir,
         metrics = rl_trainer.train_epoch(
             num_episodes=cfg.episodes_per_epoch,
             epsilon=epsilon,
+            batch_size=cfg.batch_size,
         )
         elapsed = time.time() - t0_epoch
 
