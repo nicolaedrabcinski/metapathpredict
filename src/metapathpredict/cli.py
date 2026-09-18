@@ -482,6 +482,7 @@ def _train_rl(settings, device, data_module, output_dir,
                 "metrics": metrics,
                 "config": cfg.model_dump(),
                 "algorithm": cfg.algorithm,
+                "base_channels": settings.contrastive.base_channels,
             }, output_dir / "rl_best.pt")
             improved = " [BEST - saved]"
 
@@ -507,6 +508,7 @@ def _train_rl(settings, device, data_module, output_dir,
         "agent_state_dict": agent.state_dict(),
         "config": cfg.model_dump(),
         "algorithm": cfg.algorithm,
+        "base_channels": settings.contrastive.base_channels,
     }, output_dir / "rl_final.pt")
 
     total_time = time.time() - t0_total
@@ -643,6 +645,7 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
             num_actions=3,
             backbone=config.get("backbone", "medium"),
             hidden_dim=config.get("hidden_dim", 256),
+            base_channels=ckpt.get("base_channels", 64),
         )
         model.load_state_dict(ckpt["agent_state_dict"], strict=False)
         model.to(device).eval()

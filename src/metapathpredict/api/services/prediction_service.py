@@ -101,6 +101,7 @@ class PredictionService:
                     num_actions=3,
                     backbone=config.get("backbone", "medium"),
                     hidden_dim=config.get("hidden_dim", 256),
+                    base_channels=checkpoint.get("base_channels", 64),
                 )
                 self._rl_agent.load_state_dict(
                     checkpoint["agent_state_dict"], strict=False
