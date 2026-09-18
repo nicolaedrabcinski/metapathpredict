@@ -1,0 +1,79 @@
+# Hydra experiment config for the contrastive+RL pipeline.
+# Mirrors configs/train_gpu.yaml, but targets the small smoke-test dataset
+# and gives every run its own tracked directory under experiments/.
+#
+# Usage:
+#   metapathpredict-experiment                                  # baseline
+#   metapathpredict-experiment contrastive.temperature=0.5       # one change at a time
+#   metapathpredict-experiment -m contrastive.temperature=0.07,0.3,0.5   # sweep
+
+experiment_name: baseline
+
+data:
+  default_fragment_size: 500
+  num_workers: 4
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
+
+# NOTE: the actual DataLoader batch size used by every pipeline (including
+# contrastive/RL) comes from training.batch_size, not contrastive.batch_size
+# (SequenceDataModule.from_config reads training_config.batch_size — see
+# src/metapathpredict/data/datamodule.py:375). contrastive.batch_size below
+# is currently dead config, kept only for parity with train_gpu.yaml.
+training:
+  batch_size: 64
+
+contrastive:
+  backbone: "large"
+  base_channels: 128
+  projection_dim: 512
+  hidden_dim: 1024
+  loss_type: "ntxent"
+  temperature: 0.07
+  mutation_rate: 0.3
+  mask_rate: 0.3
+  num_epochs: 1
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  batch_size: 2048
+
+rl:
+  algorithm: "actor_critic"
+  backbone: "large"
+  hidden_dim: 256
+  reward_correct: 1.0
+  reward_incorrect: -0.5
+  reward_uncertain: -0.1
+  num_epochs: 1
+  episodes_per_epoch: 1000
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0001
+  gamma: 0.99
+  epsilon_start: 1.0
+  epsilon_end: 0.05
+  epsilon_decay_epochs: 5
+  replay_buffer_size: 10000
+  target_update_freq: 5
+
+project_name: "metapathpredict-experiments"
+
+paths:
+  base_dir: "."
+  data_dir: "data"
+  datasets_dir: "data/datasets/unified_small"
+  # weights_dir / logs_dir are overridden at runtime to the Hydra run dir
+  # (scripts/run_experiment.py) so every experiment's checkpoints are isolated.
+  weights_dir: "data/weights/unified_small"
+  predictions_dir: "data/output/predictions"
+  logs_dir: "logs"
+
+hydra:
+  run:
+    dir: experiments/${experiment_name}/${now:%Y-%m-%d_%H-%M-%S}
+  sweep:
+    dir: experiments/${experiment_name}
+    subdir: ${now:%Y-%m-%d_%H-%M-%S}_${hydra.job.num}
+  job:
+    chdir: false

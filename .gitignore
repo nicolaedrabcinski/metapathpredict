@@ -145,6 +145,11 @@ data/output/
 data/datasets/
 data/input/
 logs/
+
+# Hydra experiment runs (checkpoints + logs, regenerate via scripts/run_experiment.py)
+experiments/
+outputs/
+multirun/
 *.hdf5
 *.h5
 *.pt
@@ -153,9 +158,9 @@ logs/
 *.fasta
 
 # Old config/scripts (legacy)
-config.json
-config_2.json
-config.yaml
+/config.json
+/config_2.json
+/config.yaml
 run.sh
 run2.sh
 
