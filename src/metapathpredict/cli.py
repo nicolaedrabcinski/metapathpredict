@@ -264,6 +264,60 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
         "config": cfg.model_dump(),
     }, output_dir / "contrastive_final.pt")
 
+    # The contrastive objective never touches encoder.encoder.classifier (it only
+    # optimizes the projection head), so that head is still randomly initialized
+    # here. Left as-is, _predict_single/prediction_service would softmax random
+    # weights and report a confident-looking but meaningless class. Fit it as a
+    # linear probe on the frozen backbone so contrastive-only checkpoints produce
+    # real predictions instead.
+    logger.info("Fitting linear-probe classifier head on frozen embeddings...")
+    import torch.nn.functional as F
+
+    for p in encoder.encoder.parameters():
+        p.requires_grad = False
+    for p in encoder.encoder.classifier.parameters():
+        p.requires_grad = True
+
+    probe_optimizer = torch.optim.Adam(encoder.encoder.classifier.parameters(), lr=1e-3)
+    probe_epochs = 3
+    encoder.train()
+    for probe_epoch in range(probe_epochs):
+        total_loss, correct, total = 0.0, 0, 0
+        for batch in train_loader:
+            x, labels = batch[0].to(device), batch[1].to(device)
+            logits = encoder.encoder(x)
+            probe_loss = F.cross_entropy(logits, labels)
+
+            probe_optimizer.zero_grad()
+            probe_loss.backward()
+            probe_optimizer.step()
+
+            total_loss += probe_loss.item()
+            correct += (logits.argmax(dim=1) == labels).sum().item()
+            total += labels.size(0)
+
+        logger.info(
+            f"  Linear probe epoch {probe_epoch + 1}/{probe_epochs}: "
+            f"loss={total_loss / num_batches:.4f}, acc={correct / total:.4f}"
+        )
+
+    for p in encoder.encoder.parameters():
+        p.requires_grad = True
+    encoder.eval()
+
+    # Re-save both checkpoints with the now-trained classifier head.
+    torch.save({
+        "epoch": cfg.num_epochs - 1,
+        "encoder_state_dict": encoder.state_dict(),
+        "loss": best_loss,
+        "config": cfg.model_dump(),
+    }, output_dir / "contrastive_best.pt")
+    torch.save({
+        "epoch": cfg.num_epochs - 1,
+        "encoder_state_dict": encoder.state_dict(),
+        "config": cfg.model_dump(),
+    }, output_dir / "contrastive_final.pt")
+
     total_time = time.time() - t0_total
     logger.info(f"Contrastive training complete in {total_time:.1f}s ({total_time/60:.1f}min)")
     logger.info(f"  Best loss: {best_loss:.6f}")
