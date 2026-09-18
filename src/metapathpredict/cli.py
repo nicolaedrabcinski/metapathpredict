@@ -358,25 +358,32 @@ def _train_rl(settings, device, data_module, output_dir,
         logger.info(f"  Target update freq:  {cfg.target_update_freq}")
     logger.info("-" * 50)
 
-    # Extract all sequences/labels from DataModule into tensors
+    # Point the RL environment at the train dataset directly instead of
+    # materializing it into one CPU tensor: at 8KB/fragment (float32 one-hot,
+    # 4x500), the full unified_v2 split (8.5M fragments) would need ~68GB of
+    # RAM. SequenceEnvironment reads samples lazily via dataset[idx] instead.
     logger.info("Loading training data into RL environment...")
-    all_sequences = []
-    all_labels = []
-    for batch in data_module.train_dataloader():
-        seqs, labs = batch[0], batch[1]
-        all_sequences.append(seqs)
-        all_labels.append(labs)
+    train_dataset = data_module.train_dataset
+    logger.info(f"RL environment: {len(train_dataset)} sequences")
 
-    all_sequences = torch.cat(all_sequences, dim=0)
-    all_labels = torch.cat(all_labels, dim=0)
-
-    # Class distribution
-    unique, counts = torch.unique(all_labels, return_counts=True)
+    # Class distribution. Read the labels array directly when backed by HDF5
+    # (like HDF5SequenceDataset.get_class_weights does) instead of paying for
+    # a full sequence read per sample just to look at its label.
     class_names = ["bacteria", "eukaryotic", "virus"]
-    logger.info(f"RL environment: {len(all_sequences)} sequences, shape={list(all_sequences.shape)}")
-    for cls_idx, cnt in zip(unique.tolist(), counts.tolist()):
+    if hasattr(train_dataset, "hdf5_path") and hasattr(train_dataset, "labels_key"):
+        import h5py
+        with h5py.File(train_dataset.hdf5_path, "r") as f:
+            all_labels = f[train_dataset.labels_key][:]
+        unique, label_counts = np.unique(all_labels, return_counts=True)
+        counts = dict(zip(unique.tolist(), label_counts.tolist()))
+    else:
+        counts: dict[int, int] = {}
+        for _, label in train_dataset:
+            label_idx = label.item() if torch.is_tensor(label) else int(label)
+            counts[label_idx] = counts.get(label_idx, 0) + 1
+    for cls_idx in sorted(counts):
         name = class_names[cls_idx] if cls_idx < len(class_names) else f"class_{cls_idx}"
-        logger.info(f"  {name}: {cnt} ({100*cnt/len(all_sequences):.1f}%)")
+        logger.info(f"  {name}: {counts[cls_idx]} ({100*counts[cls_idx]/len(train_dataset):.1f}%)")
 
     # Create agent
     agent_map = {
@@ -420,8 +427,7 @@ def _train_rl(settings, device, data_module, output_dir,
     # Create environment
     logger.info("Creating SequenceEnvironment...")
     env = SequenceEnvironment(
-        sequences=all_sequences,
-        labels=all_labels,
+        sequences=train_dataset,
         reward_correct=cfg.reward_correct,
         reward_incorrect=cfg.reward_incorrect,
         reward_uncertain=cfg.reward_uncertain,

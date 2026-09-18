@@ -18,6 +18,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
+from torch.utils.data import Dataset
 
 from .base import BaseModel
 from .configurable_cnn import ConfigurableCNN
@@ -63,64 +64,82 @@ class SequenceEnvironment:
     
     def __init__(
         self,
-        sequences: torch.Tensor,
-        labels: torch.Tensor,
+        sequences: torch.Tensor | Dataset,
+        labels: torch.Tensor | None = None,
         reward_correct: float = 1.0,
         reward_incorrect: float = -0.5,
         reward_uncertain: float = -0.1,
     ):
         """
         Initialize environment.
-        
+
         Args:
-            sequences: All sequences [N, channels, length].
-            labels: All labels [N].
+            sequences: Either all sequences as one tensor [N, channels, length]
+                (requires `labels`), or a Dataset yielding (sequence, label) pairs
+                per index — the latter reads samples lazily instead of requiring
+                the whole split to already be materialized in memory, which is
+                the only way a full-size dataset (millions of fragments) fits.
+            labels: All labels [N]. Required iff `sequences` is a tensor.
             reward_correct: Reward for correct classification.
             reward_incorrect: Penalty for incorrect classification.
             reward_uncertain: Penalty for low-confidence predictions.
         """
-        self.sequences = sequences
-        self.labels = labels
+        if labels is None:
+            self._dataset = sequences
+            self.sequences = None
+            self.labels = None
+        else:
+            self._dataset = None
+            self.sequences = sequences
+            self.labels = labels
         self.num_samples = len(sequences)
-        
+
         self.reward_correct = reward_correct
         self.reward_incorrect = reward_incorrect
         self.reward_uncertain = reward_uncertain
-        
+
         self.current_idx = 0
         self.current_state = None
-    
+        self.current_label = None
+
+    def _get(self, idx: int) -> tuple[torch.Tensor, int]:
+        """Fetch (sequence, label) for one index, from the dataset or the tensor pair."""
+        if self._dataset is not None:
+            seq, label = self._dataset[idx]
+            return seq, label.item() if torch.is_tensor(label) else int(label)
+        return self.sequences[idx], self.labels[idx].item()
+
     def reset(self, idx: int | None = None) -> torch.Tensor:
         """
         Reset environment to new sequence.
-        
+
         Args:
             idx: Specific index, or random if None.
-        
+
         Returns:
             Initial state (sequence).
         """
         if idx is None:
             idx = random.randint(0, self.num_samples - 1)
-        
+
         self.current_idx = idx
-        self.current_state = self.sequences[idx]
-        
+        self.current_state, self.current_label = self._get(idx)
+
         return self.current_state
-    
+
     def step(self, action: int, confidence: float = 1.0) -> tuple[torch.Tensor | None, float, bool, dict]:
         """
         Take action (classify) and get reward.
-        
+
         Args:
             action: Predicted class.
             confidence: Prediction confidence.
-        
+
         Returns:
             (next_state, reward, done, info)
         """
-        true_label = self.labels[self.current_idx].item()
-        
+        true_label = self.current_label
+
         # Calculate reward
         if action == true_label:
             reward = self.reward_correct * confidence
@@ -128,18 +147,18 @@ class SequenceEnvironment:
             reward = self.reward_incorrect
             if confidence < 0.5:
                 reward += self.reward_uncertain
-        
+
         # Episode ends after one classification
         done = True
         next_state = None
-        
+
         info = {
             "true_label": true_label,
             "predicted": action,
             "correct": action == true_label,
             "confidence": confidence,
         }
-        
+
         return next_state, reward, done, info
 
     def sample_batch(self, batch_size: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -157,8 +176,15 @@ class SequenceEnvironment:
             matching the default confidence used by the non-batched step() path.
         """
         idx = torch.randint(0, self.num_samples, (batch_size,))
-        states = self.sequences[idx]
-        true_labels = self.labels[idx]
+        if self._dataset is not None:
+            items = [self._dataset[i.item()] for i in idx]
+            states = torch.stack([s for s, _ in items])
+            true_labels = torch.stack([
+                l if torch.is_tensor(l) else torch.tensor(l) for _, l in items
+            ]).long()
+        else:
+            states = self.sequences[idx]
+            true_labels = self.labels[idx]
         return states, true_labels, idx
 
     def compute_rewards(self, actions: torch.Tensor, true_labels: torch.Tensor) -> torch.Tensor:
