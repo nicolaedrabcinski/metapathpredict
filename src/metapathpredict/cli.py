@@ -760,8 +760,12 @@ def prepare_command(args: argparse.Namespace) -> int:
         "bacteria": 0,
         "eukaryotic": 1,
         "eucaryotic": 1,
+        "fungi": 1,
+        "fungal": 1,
+        "protozoa": 1,
         "virus": 2,
         "viruses": 2,
+        "viral": 2,
     }
 
     max_per_class = args.max_fragments
