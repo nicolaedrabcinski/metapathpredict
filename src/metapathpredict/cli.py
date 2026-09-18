@@ -221,40 +221,47 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
     from tqdm import tqdm
 
     train_loader = data_module.train_dataloader()
+    val_loader = data_module.val_dataloader()
     num_batches = len(train_loader)
     logger.info(f"Train loader: {num_batches} batches (batch_size={train_loader.batch_size})")
     logger.info("Starting contrastive training...")
 
-    best_loss = float("inf")
+    # Track the checkpoint by val loss, not train loss — a model can keep
+    # driving train loss down on data it's memorizing while val loss flattens
+    # or rises; that gap is the standard overfitting signal.
+    best_val_loss = float("inf")
     t0_total = time.time()
 
     epoch_pbar = tqdm(range(cfg.num_epochs), desc="Contrastive Epochs", unit="epoch")
     for epoch in epoch_pbar:
         t0_epoch = time.time()
         loss = trainer.train_epoch(train_loader)
+        val_loss = trainer.validate_epoch(val_loader)
         elapsed = time.time() - t0_epoch
 
         improved = ""
-        if loss < best_loss:
-            best_loss = loss
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
             torch.save({
                 "epoch": epoch,
                 "encoder_state_dict": encoder.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "loss": loss,
+                "val_loss": val_loss,
                 "config": cfg.model_dump(),
             }, output_dir / "contrastive_best.pt")
             improved = " [BEST - saved]"
 
         epoch_pbar.set_postfix(
             loss=f"{loss:.6f}",
-            best=f"{best_loss:.6f}",
+            val_loss=f"{val_loss:.6f}",
+            best_val=f"{best_val_loss:.6f}",
             time=f"{elapsed:.1f}s",
         )
 
         logger.info(
             f"[Contrastive] Epoch {epoch + 1}/{cfg.num_epochs} | "
-            f"Loss: {loss:.6f} | Best: {best_loss:.6f} | "
+            f"Loss: {loss:.6f} | Val loss: {val_loss:.6f} | Best val: {best_val_loss:.6f} | "
             f"Time: {elapsed:.1f}s{improved}"
         )
 
@@ -271,6 +278,8 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
     # linear probe on the frozen backbone so contrastive-only checkpoints produce
     # real predictions instead.
     logger.info("Fitting linear-probe classifier head on frozen embeddings...")
+    import copy
+
     import torch.nn.functional as F
 
     for p in encoder.encoder.parameters():
@@ -280,6 +289,8 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
 
     probe_optimizer = torch.optim.Adam(encoder.encoder.classifier.parameters(), lr=1e-3)
     probe_epochs = 3
+    best_probe_val_acc = -1.0
+    best_probe_state = None
     encoder.train()
     for probe_epoch in range(probe_epochs):
         total_loss, correct, total = 0.0, 0, 0
@@ -296,20 +307,41 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
             correct += (logits.argmax(dim=1) == labels).sum().item()
             total += labels.size(0)
 
+        encoder.eval()
+        val_correct, val_total = 0, 0
+        with torch.no_grad():
+            for batch in val_loader:
+                x, labels = batch[0].to(device), batch[1].to(device)
+                logits = encoder.encoder(x)
+                val_correct += (logits.argmax(dim=1) == labels).sum().item()
+                val_total += labels.size(0)
+        val_acc = val_correct / val_total
+        encoder.train()
+
         logger.info(
             f"  Linear probe epoch {probe_epoch + 1}/{probe_epochs}: "
-            f"loss={total_loss / num_batches:.4f}, acc={correct / total:.4f}"
+            f"train_loss={total_loss / num_batches:.4f}, train_acc={correct / total:.4f}, "
+            f"val_acc={val_acc:.4f}"
         )
+
+        # Keep the classifier weights from whichever epoch generalized best,
+        # same reasoning as picking the encoder checkpoint by val loss above.
+        if val_acc > best_probe_val_acc:
+            best_probe_val_acc = val_acc
+            best_probe_state = copy.deepcopy(encoder.encoder.classifier.state_dict())
 
     for p in encoder.encoder.parameters():
         p.requires_grad = True
+    if best_probe_state is not None:
+        encoder.encoder.classifier.load_state_dict(best_probe_state)
     encoder.eval()
 
     # Re-save both checkpoints with the now-trained classifier head.
     torch.save({
         "epoch": cfg.num_epochs - 1,
         "encoder_state_dict": encoder.state_dict(),
-        "loss": best_loss,
+        "val_loss": best_val_loss,
+        "probe_val_acc": best_probe_val_acc,
         "config": cfg.model_dump(),
     }, output_dir / "contrastive_best.pt")
     torch.save({
@@ -320,7 +352,8 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
 
     total_time = time.time() - t0_total
     logger.info(f"Contrastive training complete in {total_time:.1f}s ({total_time/60:.1f}min)")
-    logger.info(f"  Best loss: {best_loss:.6f}")
+    logger.info(f"  Best val loss: {best_val_loss:.6f}")
+    logger.info(f"  Best probe val accuracy: {best_probe_val_acc:.4f}")
     logger.info(f"  Best checkpoint: {output_dir / 'contrastive_best.pt'}")
     logger.info(f"  Final checkpoint: {output_dir / 'contrastive_final.pt'}")
     return 0
@@ -418,9 +451,9 @@ def _train_rl(settings, device, data_module, output_dir,
         missing, unexpected = agent.load_state_dict(transfer_sd, strict=False)
         logger.info(f"Weight transfer: {len(transfer_sd)} tensors transferred, {len(missing)} agent-specific (not transferred)")
         enc_epoch = ckpt.get("epoch")
-        enc_loss = ckpt.get("loss")
-        if enc_epoch is not None and enc_loss is not None:
-            logger.info(f"  Encoder best checkpoint: epoch {enc_epoch + 1}, loss={enc_loss:.6f}")
+        enc_val_loss = ckpt.get("val_loss")
+        if enc_epoch is not None and enc_val_loss is not None:
+            logger.info(f"  Encoder best checkpoint: epoch {enc_epoch + 1}, val_loss={enc_val_loss:.6f}")
     else:
         logger.info("No contrastive encoder checkpoint — training RL from scratch")
 
@@ -451,8 +484,38 @@ def _train_rl(settings, device, data_module, output_dir,
 
     from tqdm import tqdm
 
+    val_dataset = data_module.val_dataset
+
+    def evaluate_on_val() -> float:
+        """
+        Deterministic accuracy on the val split — no exploration, no gradient.
+        Used to pick the checkpoint that generalizes instead of the train-episode
+        accuracy, which is measured *while the agent is still updating* within
+        the epoch and mixes early (worse) and late (better) episodes together.
+        """
+        agent.eval()
+        correct = 0
+        eval_batch = 256
+        with torch.no_grad():
+            for start in range(0, len(val_dataset), eval_batch):
+                items = [val_dataset[i] for i in range(start, min(start + eval_batch, len(val_dataset)))]
+                x = torch.stack([it[0] for it in items]).to(device)
+                y = torch.stack([
+                    it[1] if torch.is_tensor(it[1]) else torch.tensor(it[1]) for it in items
+                ]).to(device)
+
+                if cfg.algorithm == "dqn":
+                    logits = agent(x)
+                elif cfg.algorithm == "policy_gradient":
+                    logits, _ = agent(x)
+                else:
+                    logits, _ = agent(x)
+                correct += (logits.argmax(dim=1) == y).sum().item()
+        agent.train()
+        return correct / len(val_dataset)
+
     logger.info(f"Starting RL training: {cfg.num_epochs} epochs x {cfg.episodes_per_epoch} episodes...")
-    best_accuracy = 0.0
+    best_val_accuracy = 0.0
     t0_total = time.time()
 
     epoch_pbar = tqdm(range(cfg.num_epochs), desc="RL Training", unit="epoch")
@@ -471,6 +534,7 @@ def _train_rl(settings, device, data_module, output_dir,
             epsilon=epsilon,
             batch_size=cfg.batch_size,
         )
+        val_accuracy = evaluate_on_val()
         elapsed = time.time() - t0_epoch
 
         # Update target network for DQN
@@ -479,13 +543,14 @@ def _train_rl(settings, device, data_module, output_dir,
             logger.info(f"  Target network updated (epoch {epoch + 1})")
 
         improved = ""
-        if metrics["accuracy"] > best_accuracy:
-            best_accuracy = metrics["accuracy"]
+        if val_accuracy > best_val_accuracy:
+            best_val_accuracy = val_accuracy
             torch.save({
                 "epoch": epoch,
                 "agent_state_dict": agent.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "metrics": metrics,
+                "val_accuracy": val_accuracy,
                 "config": cfg.model_dump(),
                 "algorithm": cfg.algorithm,
                 "base_channels": settings.contrastive.base_channels,
@@ -495,16 +560,17 @@ def _train_rl(settings, device, data_module, output_dir,
         # Update tqdm
         epoch_pbar.set_postfix(
             acc=f"{metrics['accuracy']:.4f}",
+            val_acc=f"{val_accuracy:.4f}",
             rew=f"{metrics['avg_reward']:.3f}",
             loss=f"{metrics['avg_loss']:.4f}",
-            best=f"{best_accuracy:.4f}",
+            best_val=f"{best_val_accuracy:.4f}",
         )
 
         eps_str = f" | Eps: {epsilon:.3f}" if cfg.algorithm == "dqn" else ""
         logger.info(
             f"[RL] Epoch {epoch + 1}/{cfg.num_epochs} | "
             f"Reward: {metrics['avg_reward']:.4f} | "
-            f"Accuracy: {metrics['accuracy']:.4f} | "
+            f"Train acc: {metrics['accuracy']:.4f} | Val acc: {val_accuracy:.4f} | "
             f"Loss: {metrics['avg_loss']:.4f}{eps_str} | "
             f"Time: {elapsed:.1f}s{improved}"
         )
@@ -519,7 +585,7 @@ def _train_rl(settings, device, data_module, output_dir,
 
     total_time = time.time() - t0_total
     logger.info(f"RL training complete in {total_time:.1f}s ({total_time/60:.1f}min)")
-    logger.info(f"  Best accuracy: {best_accuracy:.4f}")
+    logger.info(f"  Best val accuracy: {best_val_accuracy:.4f}")
     logger.info(f"  Best checkpoint: {output_dir / 'rl_best.pt'}")
     logger.info(f"  Final checkpoint: {output_dir / 'rl_final.pt'}")
     return 0
@@ -795,8 +861,52 @@ def _stream_fasta(fasta_path: Path):
             yield "".join(current_seq)
 
 
+def _assign_sequence_splits(
+    n_sequences: int, train_ratio: float, val_ratio: float, test_ratio: float, rng: np.random.RandomState,
+) -> list[str]:
+    """
+    Assign each of n_sequences source sequences to train/val/test, so a whole
+    sequence (and every fragment cut from it) lands entirely in one split.
+
+    A fragment-level split lets fragments from the same genome appear in both
+    train and val — the model can then pick up on that genome's specific
+    composition rather than learning something that generalizes, which makes
+    val accuracy an overly optimistic estimate of real generalization.
+    """
+    order = rng.permutation(n_sequences)
+    if n_sequences <= 1:
+        return ["train"] * n_sequences
+    if n_sequences == 2:
+        # Not enough sequences to give every split at least one; prefer train+val.
+        splits = [""] * n_sequences
+        splits[order[0]] = "train"
+        splits[order[1]] = "val"
+        return splits
+
+    n_val = max(1, round(n_sequences * val_ratio))
+    n_test = max(1, round(n_sequences * test_ratio))
+    n_train = n_sequences - n_val - n_test
+    if n_train < 1:
+        n_train = 1
+        n_val = max(1, (n_sequences - n_train) // 2)
+        n_test = n_sequences - n_train - n_val
+
+    splits = [""] * n_sequences
+    for idx in order[:n_train]:
+        splits[idx] = "train"
+    for idx in order[n_train : n_train + n_val]:
+        splits[idx] = "val"
+    for idx in order[n_train + n_val :]:
+        splits[idx] = "test"
+    return splits
+
+
 def prepare_command(args: argparse.Namespace) -> int:
-    """Prepare dataset from FASTA files (streaming, supports millions of fragments)."""
+    """Prepare dataset from FASTA files (streaming, supports millions of fragments).
+
+    Splits are assigned per source sequence (genome/chromosome/contig), not per
+    fragment — see _assign_sequence_splits.
+    """
     from metapathpredict.config import Settings
     from metapathpredict.data import OneHotEncoder, SequencePreprocessor
 
@@ -810,6 +920,9 @@ def prepare_command(args: argparse.Namespace) -> int:
 
     # Override with args
     sequence_length = args.length or settings.data.default_fragment_size
+    train_ratio = settings.data.train_ratio
+    val_ratio = settings.data.val_ratio
+    test_ratio = settings.data.test_ratio
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -833,180 +946,155 @@ def prepare_command(args: argparse.Namespace) -> int:
 
     max_per_class = args.max_fragments
     chunk_size = args.chunk_size
+    rng = np.random.RandomState(42)
+    split_names = ("train", "val", "test")
+    split_ratios = {"train": train_ratio, "val": val_ratio, "test": test_ratio}
 
-    # ── Pass 1: stream fragments directly into a temporary HDF5 ──
-    tmp_path = output_dir / f"_tmp_all_{sequence_length}.hdf5"
-    total_written = 0
+    # Open growable HDF5 outputs for all three splits up front — fragments are
+    # written straight to their assigned split, no temp-file shuffle pass needed.
+    out_paths = {s: output_dir / f"encoded_{s}_{sequence_length}.hdf5" for s in split_names}
+    files = {s: h5py.File(out_paths[s], "w") for s in split_names}
+    datasets: dict[str, dict] = {}
+    for s in split_names:
+        datasets[s] = {
+            "seq": files[s].create_dataset(
+                "sequences", shape=(0, 4, sequence_length), maxshape=(None, 4, sequence_length),
+                dtype="float32", chunks=(min(chunk_size, 1024), 4, sequence_length),
+                compression="gzip", compression_opts=1,
+            ),
+            "lab": files[s].create_dataset(
+                "labels", shape=(0,), maxshape=(None,),
+                dtype="int64", chunks=(min(chunk_size, 4096),),
+                compression="gzip", compression_opts=1,
+            ),
+            "written": 0,
+            "buf_data": [],
+            "buf_labels": [],
+        }
+        # HDF5SequenceDataset.num_classes reads these attrs (falling back to 3
+        # when absent); previously nothing ever set them.
+        files[s].attrs["num_classes"] = 3
+        files[s].attrs["sequence_length"] = sequence_length
+
+    def flush(split: str) -> None:
+        d = datasets[split]
+        if not d["buf_data"]:
+            return
+        chunk_arr = np.stack(d["buf_data"], axis=0).astype(np.float32)
+        chunk_lab = np.array(d["buf_labels"], dtype=np.int64)
+        n = len(chunk_arr)
+        d["seq"].resize(d["written"] + n, axis=0)
+        d["lab"].resize(d["written"] + n, axis=0)
+        d["seq"][d["written"] : d["written"] + n] = chunk_arr
+        d["lab"][d["written"] : d["written"] + n] = chunk_lab
+        d["written"] += n
+        d["buf_data"].clear()
+        d["buf_labels"].clear()
+
+    def append(split: str, fragment_arr: np.ndarray, label: int) -> None:
+        d = datasets[split]
+        d["buf_data"].append(fragment_arr)
+        d["buf_labels"].append(label)
+        if len(d["buf_data"]) >= chunk_size:
+            flush(split)
+
     class_counts = {0: 0, 1: 0, 2: 0}
+    class_split_counts = {c: {s: 0 for s in split_names} for c in (0, 1, 2)}
 
-    with h5py.File(tmp_path, "w") as hf:
-        ds_seq = hf.create_dataset(
-            "sequences",
-            shape=(0, 4, sequence_length),
-            maxshape=(None, 4, sequence_length),
-            dtype="float32",
-            chunks=(min(chunk_size, 1024), 4, sequence_length),
-            compression="gzip",
-            compression_opts=1,
-        )
-        ds_lab = hf.create_dataset(
-            "labels",
-            shape=(0,),
-            maxshape=(None,),
-            dtype="int64",
-            chunks=(min(chunk_size, 4096),),
-            compression="gzip",
-            compression_opts=1,
-        )
+    for fasta_path in args.inputs:
+        fasta_path = Path(fasta_path)
 
-        for fasta_path in args.inputs:
-            fasta_path = Path(fasta_path)
+        if not fasta_path.exists():
+            logger.error(f"File not found: {fasta_path}")
+            continue
 
-            if not fasta_path.exists():
-                logger.error(f"File not found: {fasta_path}")
+        # Determine class from filename
+        class_name = None
+        for key in class_mapping:
+            if key in fasta_path.stem.lower():
+                class_name = key
+                break
+
+        if class_name is None:
+            logger.warning(f"Could not determine class for {fasta_path}")
+            continue
+
+        class_label = class_mapping[class_name]
+        logger.info(f"Processing {fasta_path} as class {class_name} (label {class_label})")
+
+        n_sequences = sum(1 for line in open(fasta_path) if line.startswith(">"))
+        seq_split = _assign_sequence_splits(n_sequences, train_ratio, val_ratio, test_ratio, rng)
+        if n_sequences <= 2:
+            logger.warning(
+                f"  Only {n_sequences} sequence(s) in {fasta_path.name} — "
+                f"can't give every split real genome diversity from this file"
+            )
+
+        # Per-class fragment budget is split across train/val/test by the same
+        # ratios, so a handful of early train-assigned sequences hitting
+        # max_per_class can't starve val/test of their share.
+        split_caps = {
+            s: (round(max_per_class * split_ratios[s]) if max_per_class else None)
+            for s in split_names
+        }
+
+        seq_count = 0
+        for seq in _stream_fasta(fasta_path):
+            split = seq_split[seq_count]
+            seq_count += 1
+            cap = split_caps[split]
+            if cap is not None and class_split_counts[class_label][split] >= cap:
                 continue
+            try:
+                cleaned, stats = preprocessor.process(seq)
+                if cleaned is None:
+                    continue
+                for fragment, _start, _end in preprocessor.fragment(
+                    cleaned, sequence_length, step_size=sequence_length
+                ):
+                    encoded = encoder.encode(fragment)  # (seq_len, 4)
+                    append(split, encoded.T, class_label)  # transpose to (4, seq_len) for Conv1d
+                    class_split_counts[class_label][split] += 1
 
-            # Determine class from filename
-            class_name = None
-            for key in class_mapping:
-                if key in fasta_path.stem.lower():
-                    class_name = key
-                    break
+                    if cap is not None and class_split_counts[class_label][split] >= cap:
+                        break
 
-            if class_name is None:
-                logger.warning(f"Could not determine class for {fasta_path}")
-                continue
+            except Exception as e:
+                logger.warning(f"  Failed to encode sequence: {e}")
 
-            class_label = class_mapping[class_name]
-            logger.info(f"Processing {fasta_path} as class {class_name} (label {class_label})")
+            if max_per_class and all(
+                split_caps[s] is not None and class_split_counts[class_label][s] >= split_caps[s]
+                for s in split_names
+            ):
+                break
 
-            # Stream sequences, fragment, encode, and write in chunks
-            buf_data = []
-            buf_labels = []
-            seq_count = 0
-            class_written = class_counts[class_label]
+        class_counts[class_label] = sum(class_split_counts[class_label].values())
+        logger.info(f"  Processed {seq_count} sequences → {class_counts[class_label]} fragments")
 
-            for seq in _stream_fasta(fasta_path):
-                seq_count += 1
-                if max_per_class and class_written >= max_per_class:
-                    break
-                try:
-                    cleaned, stats = preprocessor.process(seq)
-                    if cleaned is None:
-                        continue
-                    for fragment, _start, _end in preprocessor.fragment(
-                        cleaned, sequence_length, step_size=sequence_length
-                    ):
-                        encoded = encoder.encode(fragment)  # (seq_len, 4)
-                        # Transpose to (4, seq_len) for Conv1d
-                        buf_data.append(encoded.T)
-                        buf_labels.append(class_label)
-                        class_written += 1
+    for s in split_names:
+        flush(s)
 
-                        if max_per_class and class_written >= max_per_class:
-                            break
-
-                        # Flush chunk to HDF5 when buffer is full
-                        if len(buf_data) >= chunk_size:
-                            chunk_arr = np.stack(buf_data, axis=0).astype(np.float32)
-                            chunk_lab = np.array(buf_labels, dtype=np.int64)
-                            n = len(chunk_arr)
-                            ds_seq.resize(total_written + n, axis=0)
-                            ds_lab.resize(total_written + n, axis=0)
-                            ds_seq[total_written : total_written + n] = chunk_arr
-                            ds_lab[total_written : total_written + n] = chunk_lab
-                            total_written += n
-                            buf_data.clear()
-                            buf_labels.clear()
-
-                except Exception as e:
-                    logger.warning(f"  Failed to encode sequence: {e}")
-
-            # Flush remaining buffer
-            if buf_data:
-                chunk_arr = np.stack(buf_data, axis=0).astype(np.float32)
-                chunk_lab = np.array(buf_labels, dtype=np.int64)
-                n = len(chunk_arr)
-                ds_seq.resize(total_written + n, axis=0)
-                ds_lab.resize(total_written + n, axis=0)
-                ds_seq[total_written : total_written + n] = chunk_arr
-                ds_lab[total_written : total_written + n] = chunk_lab
-                total_written += n
-                buf_data.clear()
-                buf_labels.clear()
-
-            class_counts[class_label] = class_written
-            logger.info(f"  Processed {seq_count} sequences → {class_written} fragments")
-
+    total_written = sum(class_counts.values())
     if total_written == 0:
         logger.error("No sequences processed")
-        tmp_path.unlink(missing_ok=True)
+        for f in files.values():
+            f.close()
+        for p in out_paths.values():
+            p.unlink(missing_ok=True)
         return 1
 
-    logger.info(f"Total: {total_written} fragments written to temp HDF5")
+    for f in files.values():
+        f.close()
+
+    logger.info(f"Total: {total_written} fragments written")
     canonical_names = {0: "bacteria", 1: "eukaryotic", 2: "virus"}
     for label, name in canonical_names.items():
         if class_counts[label] > 0:
             logger.info(f"  {name}: {class_counts[label]}")
 
-    # ── Pass 2: shuffle and split into train/val/test ──
-    logger.info("Shuffling and splitting into train/val/test...")
-
-    rng = np.random.RandomState(42)
-    indices = rng.permutation(total_written)
-
-    n_test = int(total_written * 0.1)
-    n_val = int(total_written * 0.1)
-    n_train = total_written - n_val - n_test
-
-    splits = {
-        "train": indices[:n_train],
-        "val": indices[n_train : n_train + n_val],
-        "test": indices[n_train + n_val :],
-    }
-
-    with h5py.File(tmp_path, "r") as src:
-        for split_name, split_idx in splits.items():
-            split_idx_sorted = np.sort(split_idx)  # HDF5 needs sorted indices
-            out_path = output_dir / f"encoded_{split_name}_{sequence_length}.hdf5"
-
-            logger.info(f"Writing {split_name}: {len(split_idx)} samples → {out_path}")
-
-            with h5py.File(out_path, "w") as dst:
-                # Read and write in chunks to avoid OOM
-                n = len(split_idx_sorted)
-                read_chunk = min(chunk_size, n)
-                seq_ds = dst.create_dataset(
-                    "sequences",
-                    shape=(n, 4, sequence_length),
-                    dtype="float32",
-                    chunks=(min(1024, n), 4, sequence_length),
-                    compression="gzip",
-                )
-                lab_ds = dst.create_dataset(
-                    "labels",
-                    shape=(n,),
-                    dtype="int64",
-                    chunks=(min(4096, n),),
-                    compression="gzip",
-                )
-
-                # HDF5SequenceDataset.num_classes reads these attrs (falling back
-                # to 3 when absent); previously nothing ever set them, so a non-3
-                # class dataset would silently misreport its class count.
-                dst.attrs["num_classes"] = 3
-                dst.attrs["sequence_length"] = sequence_length
-
-                written = 0
-                for start in range(0, n, read_chunk):
-                    end = min(start + read_chunk, n)
-                    idx_batch = split_idx_sorted[start:end]
-                    seq_ds[written : written + len(idx_batch)] = src["sequences"][idx_batch]
-                    lab_ds[written : written + len(idx_batch)] = src["labels"][idx_batch]
-                    written += len(idx_batch)
-
-    # Remove temp file
-    tmp_path.unlink(missing_ok=True)
+    split_totals = {s: sum(class_split_counts[c][s] for c in (0, 1, 2)) for s in split_names}
+    for s in split_names:
+        logger.info(f"  {s}: {split_totals[s]} samples → {out_paths[s]}")
 
     # Save metadata
     metadata = {
@@ -1014,17 +1102,18 @@ def prepare_command(args: argparse.Namespace) -> int:
         "num_classes": 3,
         "class_names": ["bacteria", "eukaryotic", "virus"],
         "total_fragments": total_written,
-        "train_size": n_train,
-        "val_size": n_val,
-        "test_size": n_test,
+        "train_size": split_totals["train"],
+        "val_size": split_totals["val"],
+        "test_size": split_totals["test"],
         "class_counts": {canonical_names[k]: v for k, v in class_counts.items()},
+        "split_method": "genome-level (per source sequence, not per fragment)",
     }
 
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
 
     logger.info(f"Dataset prepared in {output_dir}")
-    logger.info(f"  Train: {n_train}, Val: {n_val}, Test: {n_test}")
+    logger.info(f"  Train: {split_totals['train']}, Val: {split_totals['val']}, Test: {split_totals['test']}")
 
     return 0
 

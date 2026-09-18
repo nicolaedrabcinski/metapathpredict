@@ -610,7 +610,42 @@ class ContrastiveTrainer:
         )
 
         return avg_loss
-    
+
+    def validate_epoch(self, dataloader: DataLoader) -> float:
+        """
+        Compute the same contrastive loss on held-out data, no gradient/optimizer
+        step. Lets training pick the checkpoint that generalizes instead of the
+        one with the lowest train loss, and gives a train-vs-val curve to spot
+        overfitting (val loss flattening or rising while train loss keeps falling).
+        """
+        self.encoder.eval()
+        total_loss = 0.0
+        num_batches = len(dataloader)
+
+        with torch.no_grad():
+            for batch in dataloader:
+                if isinstance(batch, (list, tuple)):
+                    x = batch[0].to(self.device)
+                    labels = batch[1].to(self.device) if len(batch) > 1 else None
+                else:
+                    x = batch.to(self.device)
+                    labels = None
+
+                view1, view2 = self.augmentation(x)
+                z1 = self.encoder(view1)
+                z2 = self.encoder(view2)
+
+                if self.use_supervised and labels is not None:
+                    features = torch.stack([z1, z2], dim=1)
+                    loss = self.criterion(features, labels)
+                else:
+                    loss = self.criterion(z1, z2)
+
+                total_loss += loss.item()
+
+        self.encoder.train()
+        return total_loss / num_batches
+
     def get_embeddings(self, dataloader: DataLoader) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract embeddings for downstream tasks."""
         self.encoder.eval()
