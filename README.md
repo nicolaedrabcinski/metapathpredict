@@ -119,6 +119,20 @@ it is. With `test_fragments.fasta` next to the test file, `evaluate` (and every 
 accuracy split by how close the nearest training genome of the class is (genus, family, order, ...;
 "near" = genus or family, "far" = the rest).
 
+Explaining a trained CNN classifier (`metapathpredict.explain`, figures only):
+
+```bash
+python scripts/explain.py                                    # writes figures/xai/*.png, data/*.csv, summary.json
+python scripts/explain.py --model experiments/baselines/<run>/model.pt --data-dir data/datasets/<split> \
+    --fragment-size 500 --out figures/xai_500                # another model / dataset
+```
+
+Attribution maps (Integrated Gradients, gradient x input, Grad-CAM), deletion curves and a
+random-weights check that say whether the maps can be trusted, a shuffle test (how much of the
+prediction is base or dinucleotide composition), predictions by GC content, first-layer motifs and
+the test genomes the model gets most wrong. Needs a model saved with
+`scripts/baselines.py supervised --save-checkpoint`.
+
 Reference points and model comparisons:
 
 ```bash

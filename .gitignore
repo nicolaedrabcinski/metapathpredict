@@ -220,3 +220,6 @@ data/raw/
 terraform/*.tfstate
 terraform/*.tfstate.backup
 terraform/.terraform/
+
+# Generated explanation figures (regenerate with scripts/explain.py)
+figures/
