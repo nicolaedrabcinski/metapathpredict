@@ -250,7 +250,9 @@ class ModelInterpreter:
             scaled_inputs.append(scaled_input)
         
         # Stack and compute gradients
-        scaled_inputs = torch.cat(scaled_inputs, dim=0)
+        # detach: built from input_tensor (which requires grad), so the concatenation would be
+        # a non-leaf and .grad below would always be None
+        scaled_inputs = torch.cat(scaled_inputs, dim=0).detach()
         scaled_inputs.requires_grad_(True)
         
         outputs = self.model(scaled_inputs)
@@ -1013,6 +1015,54 @@ class SimpleCNN(nn.Module):
 # Model Loading Utilities
 # ============================================================================
 
+class ClassificationView(nn.Module):
+    """
+    Presents a trained checkpoint as a plain (batch, 3) classifier over
+    prokaryote/eukaryote/virus, so every attribution method can index
+    `output[:, target_class]` with the API's class indices.
+
+    Needed because (a) RL agents return tuples such as (logits, value), and
+    contrastive encoders return a normalized projection instead of class scores;
+    (b) fine-grained models (8 taxonomic classes) must be rolled up to the three
+    classes the API explains — otherwise class index 1 would silently mean
+    "archaea" instead of "eukaryotic".
+    """
+
+    def __init__(self, model: nn.Module, class_names: list[str], kind: str, algorithm: str | None = None):
+        super().__init__()
+        from metapathpredict.config.settings import SUPERCLASSES, superclass_index_map
+
+        self.model = model
+        self.kind = kind
+        self.algorithm = algorithm
+        groups = torch.zeros(len(class_names), len(SUPERCLASSES))
+        for i, j in enumerate(superclass_index_map(class_names)):
+            groups[i, j] = 1.0
+        self.register_buffer("groups", groups)
+
+    def _class_probs(self, x: Tensor) -> Tensor:
+        if self.kind == "contrastive":
+            return F.softmax(self.model.encoder(x), dim=-1)
+        out = self.model(x)
+        if self.algorithm == "policy_gradient":
+            return out[0]
+        if self.algorithm == "dqn":
+            return F.softmax(out, dim=-1)
+        return F.softmax(out[0], dim=-1)  # actor_critic: (logits, value)
+
+    def forward(self, x: Tensor) -> Tensor:
+        # The interpreter encodes sequences as (batch, length, 4); the CNNs take (batch, 4, length).
+        if x.dim() == 3 and x.shape[-1] == 4 and x.shape[1] != 4:
+            x = x.transpose(1, 2)
+        return torch.log((self._class_probs(x) @ self.groups).clamp_min(1e-8))
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError:
+            return getattr(self.model, name)
+
+
 @lru_cache(maxsize=4)
 def load_model_for_interpretation(
     weights_path: str,
@@ -1056,8 +1106,12 @@ def load_model_for_interpretation(
             projection_dim=config.get("projection_dim", 128),
             hidden_dim=config.get("hidden_dim", 256),
             base_channels=config.get("base_channels", 64),
+            num_classes=checkpoint.get("num_classes", 3),
         )
         model.load_state_dict(checkpoint["encoder_state_dict"], strict=False)
+        model = ClassificationView(
+            model, checkpoint.get("class_names", ["bacteria", "eukaryotic", "virus"]), "contrastive"
+        )
         logger.info(f"Loaded ContrastiveEncoder from {weights_path}")
 
     elif "agent_state_dict" in checkpoint:
@@ -1071,12 +1125,15 @@ def load_model_for_interpretation(
 
         model = agent_cls(
             in_channels=4,
-            num_actions=3,
+            num_actions=checkpoint.get("num_classes", 3),
             backbone=config.get("backbone", "medium"),
             hidden_dim=config.get("hidden_dim", 256),
             base_channels=checkpoint.get("base_channels", 64),
         )
         model.load_state_dict(checkpoint["agent_state_dict"], strict=False)
+        model = ClassificationView(
+            model, checkpoint.get("class_names", ["bacteria", "eukaryotic", "virus"]), "rl", algorithm
+        )
         logger.info(f"Loaded {algorithm} agent from {weights_path}")
 
     elif "model_state_dict" in checkpoint:

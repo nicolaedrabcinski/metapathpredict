@@ -27,6 +27,25 @@ from metapathpredict.models.reinforcement import (
 # Label index → ClassLabel mapping
 INDEX_TO_CLASS = {0: ClassLabel.BACTERIA, 1: ClassLabel.EUKARYOTIC, 2: ClassLabel.VIRUS}
 
+# Fine-grained model classes roll up to the three classes the API reports.
+SUPERCLASS_TO_API = {
+    "prokaryote": ClassLabel.BACTERIA,
+    "eukaryote": ClassLabel.EUKARYOTIC,
+    "virus": ClassLabel.VIRUS,
+}
+DEFAULT_CLASS_NAMES = ["bacteria", "eukaryotic", "virus"]
+
+
+def api_probabilities(probs: torch.Tensor, class_names: list[str]) -> dict:
+    """Sum per-class probabilities into bacteria/eukaryotic/virus (identity for 3-class models)."""
+    from metapathpredict.config.settings import SUPERCLASSES, TAXON_TO_SUPERCLASS
+
+    out = {label: 0.0 for label in SUPERCLASS_TO_API.values()}
+    for name, p in zip(class_names, probs.tolist()):
+        out[SUPERCLASS_TO_API[TAXON_TO_SUPERCLASS[name]]] += p
+    return out
+
+
 # Nucleotide → one-hot channel index
 NUC_TO_IDX = {"A": 0, "C": 1, "G": 2, "T": 3}
 
@@ -52,6 +71,8 @@ class PredictionService:
         self._contrastive_encoder: Optional[ContrastiveEncoder] = None
         self._rl_agent = None
         self._rl_algorithm: Optional[str] = None
+        self._contrastive_class_names = DEFAULT_CLASS_NAMES
+        self._rl_class_names = DEFAULT_CLASS_NAMES
         self._models_loaded = False
         self._load_models()
 
@@ -71,7 +92,9 @@ class PredictionService:
                     projection_dim=config.get("projection_dim", 128),
                     hidden_dim=config.get("hidden_dim", 256),
                     base_channels=config.get("base_channels", 64),
+                    num_classes=checkpoint.get("num_classes", 3),
                 )
+                self._contrastive_class_names = checkpoint.get("class_names", DEFAULT_CLASS_NAMES)
                 self._contrastive_encoder.load_state_dict(
                     checkpoint["encoder_state_dict"], strict=False
                 )
@@ -98,11 +121,12 @@ class PredictionService:
 
                 self._rl_agent = agent_cls(
                     in_channels=4,
-                    num_actions=3,
+                    num_actions=checkpoint.get("num_classes", 3),
                     backbone=config.get("backbone", "medium"),
                     hidden_dim=config.get("hidden_dim", 256),
                     base_channels=checkpoint.get("base_channels", 64),
                 )
+                self._rl_class_names = checkpoint.get("class_names", DEFAULT_CLASS_NAMES)
                 self._rl_agent.load_state_dict(
                     checkpoint["agent_state_dict"], strict=False
                 )
@@ -127,35 +151,16 @@ class PredictionService:
         x = encode_sequence(sequence).to(self.device)
 
         with torch.no_grad():
-            embeddings = self._contrastive_encoder.get_embeddings(x)
-            # Use encoder's classifier head if available, otherwise use embedding similarity
-            if hasattr(self._contrastive_encoder.encoder, "classifier"):
-                logits = self._contrastive_encoder.encoder.classifier(embeddings)
-            else:
-                # Fallback: linear probe not available, use projection norm as proxy
-                logits = self._contrastive_encoder.encoder(x)
-                if logits.shape[-1] != 3:
-                    # No classifier head — return uniform with low confidence
-                    return MethodPrediction(
-                        method=MethodType.CONTRASTIVE,
-                        predicted_class=ClassLabel.BACTERIA,
-                        confidence=0.34,
-                        probabilities=ClassProbabilities(
-                            bacteria=0.34, eukaryotic=0.33, virus=0.33
-                        ),
-                    )
+            # Classifier head fit as a linear probe at the end of contrastive training
+            probs = F.softmax(self._contrastive_encoder.encoder(x), dim=1).squeeze(0)
 
-            probs = F.softmax(logits, dim=1).squeeze(0)
+        return self._to_prediction(MethodType.CONTRASTIVE, probs, self._contrastive_class_names)
 
-        probs_dict = {
-            ClassLabel.BACTERIA: probs[0].item(),
-            ClassLabel.EUKARYOTIC: probs[1].item(),
-            ClassLabel.VIRUS: probs[2].item(),
-        }
+    def _to_prediction(self, method: MethodType, probs: torch.Tensor, class_names: list[str]) -> MethodPrediction:
+        probs_dict = api_probabilities(probs, class_names)
         predicted = max(probs_dict, key=probs_dict.get)
-
         return MethodPrediction(
-            method=MethodType.CONTRASTIVE,
+            method=method,
             predicted_class=predicted,
             confidence=probs_dict[predicted],
             probabilities=ClassProbabilities(
@@ -180,23 +185,7 @@ class PredictionService:
                 logits, _ = self._rl_agent(x)
                 probs = F.softmax(logits, dim=1).squeeze(0)
 
-        probs_dict = {
-            ClassLabel.BACTERIA: probs[0].item(),
-            ClassLabel.EUKARYOTIC: probs[1].item(),
-            ClassLabel.VIRUS: probs[2].item(),
-        }
-        predicted = max(probs_dict, key=probs_dict.get)
-
-        return MethodPrediction(
-            method=MethodType.REINFORCEMENT,
-            predicted_class=predicted,
-            confidence=probs_dict[predicted],
-            probabilities=ClassProbabilities(
-                bacteria=probs_dict[ClassLabel.BACTERIA],
-                eukaryotic=probs_dict[ClassLabel.EUKARYOTIC],
-                virus=probs_dict[ClassLabel.VIRUS],
-            ),
-        )
+        return self._to_prediction(MethodType.REINFORCEMENT, probs, self._rl_class_names)
 
     def _predict(self, method: MethodType, sequence: str) -> MethodPrediction:
         """Route prediction to the appropriate model."""
