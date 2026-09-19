@@ -154,22 +154,6 @@ On our benchmark dataset (60k sequences, 3 classes):
 | Contrastive | 95.8% | 0.957 | 45 min |
 | RL (REINFORCE) | 93.5% | 0.932 | 120 min |
 
-## Ensemble Strategy
-
-Combine multiple approaches for best results:
-
-```python
-from metapathpredict.inference import EnsemblePredictor
-
-ensemble = EnsemblePredictor([
-    ConfigurableCNN(kernel_preset="small"),
-    ConfigurableCNN(kernel_preset="medium"),
-    ConfigurableCNN(kernel_preset="large"),
-])
-
-predictions = ensemble.predict(sequences)
-```
-
 ## Next Steps
 
 - [Configurable CNN](cnn.md) - Deep dive into CNN architecture

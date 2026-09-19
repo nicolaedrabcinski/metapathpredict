@@ -42,24 +42,27 @@ pip install -e ".[all]"
 
 ## Quick Start
 
-### 1. Download NCBI Data
+### 1. Download genomes
+
+One genome per species (at most two per genus) across eight NCBI RefSeq groups:
+bacteria, archaea, fungi, protozoa, plant, invertebrate, vertebrate, virus (~30 GB).
 
 ```bash
-python scripts/download_ncbi_data.py \
-    --output data/raw \
-    --num-sequences 20000 \
-    --fragment-size 500
+python scripts/download_diverse_genomes.py --output data/genomes
 ```
 
-### 2. Prepare Dataset (FASTA → HDF5)
+### 2. Prepare dataset (genomes → HDF5)
+
+Whole genomes are assigned to train/val/test, so val and test contain species the model
+never saw in training. The script verifies that no species appears in two splits.
 
 ```bash
 metapathpredict prepare \
-    data/raw/bacteria_fragments.fasta \
-    data/raw/eukaryotic_fragments.fasta \
-    data/raw/virus_fragments.fasta \
-    --output data/datasets/unified \
-    --length 500
+    --manifest data/genomes/manifest.tsv \
+    --config configs/train_gpu.yaml \
+    --output data/datasets/taxa8 \
+    --length 500 \
+    --fragments-per-class 30000
 ```
 
 ### 3. Train (Full Pipeline)
@@ -73,10 +76,10 @@ metapathpredict train --pipeline full --config configs/train_gpu.yaml --device c
 ```
 
 This runs:
-1. **Contrastive pretraining** — learns DNA representations via SupCon loss
+1. **Contrastive pretraining** — learns DNA representations via NT-Xent loss, then fits a linear probe on the frozen encoder
 2. **RL fine-tuning** — transfers encoder weights to Actor-Critic agent
 
-Checkpoints saved to `data/weights/unified/`:
+Checkpoints saved to `data/weights/taxa8/`:
 - `contrastive_best.pt` — best encoder
 - `rl_best.pt` — best RL agent
 
@@ -85,15 +88,15 @@ Checkpoints saved to `data/weights/unified/`:
 ```bash
 metapathpredict predict \
     --input sequences.fasta \
-    --model data/weights/unified/rl_best.pt
+    --model data/weights/taxa8/rl_best.pt
 ```
 
 ### 5. Evaluate
 
 ```bash
 metapathpredict evaluate \
-    --model data/weights/unified/rl_best.pt \
-    --config configs/train_gpu.yaml
+    --model data/weights/taxa8/rl_best.pt \
+    --data data/datasets/taxa8/encoded_test_500.hdf5
 ```
 
 ## Training Pipelines
@@ -212,9 +215,8 @@ metapathpredict/
 │   │   ├── dataset.py          # HDF5 dataset loaders
 │   │   ├── datamodule.py       # DataModule with train/val/test splits
 │   │   └── preprocessing.py    # One-hot encoding, fragmentation
-│   ├── training/               # Trainer, callbacks, tracking
+│   ├── training/               # Legacy supervised trainer, callbacks
 │   ├── api/                    # FastAPI backend
-│   ├── pipeline/               # Dagster assets
 │   ├── config/                 # Pydantic settings
 │   └── cli.py                  # CLI entry point
 ├── frontend/                   # React dashboard
@@ -222,7 +224,8 @@ metapathpredict/
 │   ├── train_cpu.yaml
 │   └── train_gpu.yaml
 ├── scripts/
-│   └── download_ncbi_data.py   # NCBI data downloader
+│   ├── download_diverse_genomes.py  # Genome downloader (manifest)
+│   └── run_experiment.py       # Hydra experiment runner
 ├── docker/                     # Dockerfiles
 ├── tests/                      # 184+ tests
 └── pyproject.toml

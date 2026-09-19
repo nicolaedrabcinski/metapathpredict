@@ -252,21 +252,6 @@ dist.init_process_group("nccl")
 model = nn.parallel.DistributedDataParallel(model)
 ```
 
-### Using Ray
-
-```python
-from metapathpredict.pipeline import RayTrainer
-
-ray_trainer = RayTrainer(
-    model_class=ConfigurableCNN,
-    model_config=config.model,
-    num_workers=4,
-    use_gpu=True,
-)
-
-ray_trainer.fit(train_dataset, val_dataset, epochs=100)
-```
-
 ## Checkpointing
 
 ### Save Checkpoint

@@ -91,8 +91,6 @@ nav:
   - User Guide:
     - Data Preparation: user-guide/data-preparation.md
     - Training: user-guide/training.md
-    - Inference: user-guide/inference.md
-    - Experiment Tracking: user-guide/tracking.md
   - Training Approaches:
     - Overview: training-approaches/overview.md
     - Configurable CNN: training-approaches/cnn.md
@@ -103,10 +101,8 @@ nav:
     - Data: api/data.md
     - Models: api/models.md
     - Training: api/training.md
-    - Inference: api/inference.md
   - Deployment:
     - Docker: deployment/docker.md
     - Cloud (GCP): deployment/cloud.md
-    - Terraform: deployment/terraform.md
   - Contributing: contributing.md
   - Changelog: changelog.md

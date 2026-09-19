@@ -68,18 +68,6 @@ viz = [
     "seaborn>=0.12.0",
     "plotly>=5.14.0",
 ]
-pipeline = [
-    "duckdb>=0.9.0",
-    "pyarrow>=14.0.0",
-    "boto3>=1.28.0",
-]
-distributed = [
-    "ray[train,tune]>=2.8.0",
-]
-orchestration = [
-    "dagster>=1.5.0",
-    "dagster-webserver>=1.5.0",
-]
 docs = [
     "mkdocs>=1.5.0",
     "mkdocs-material>=9.5.0",
@@ -87,12 +75,8 @@ docs = [
     "mkdocs-gen-files>=0.5.0",
     "mkdocs-literate-nav>=0.6.0",
 ]
-tracking = [
-    "mlflow>=2.10.0",
-    "wandb>=0.16.0",
-]
 all = [
-    "metapathpredict[dev,api,viz,pipeline,distributed,orchestration,docs,tracking,experiments]",
+    "metapathpredict[dev,api,viz,docs,experiments]",
 ]
 
 [project.scripts]

@@ -374,8 +374,7 @@ metapathpredict/
 │   └── training/            # Training utilities
 ├── tests/                   # Test files
 ├── data/                    # Data directory
-├── configs/                 # Configuration files
-└── terraform/               # Infrastructure as code
+└── configs/                 # Configuration files
 ```
 
 ## Additional Resources

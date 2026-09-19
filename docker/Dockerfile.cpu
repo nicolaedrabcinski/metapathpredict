@@ -29,9 +29,6 @@ RUN pip install --no-cache-dir \
     pydantic-settings \
     pyyaml \
     tqdm \
-    duckdb \
-    pyarrow \
-    boto3 \
     biopython \
     pytest
 

@@ -74,15 +74,6 @@ metapathpredict train \
     --data data/datasets/unified
 ```
 
-### Using Python
-
-```python
-import torch
-from metapathpredict.config import Config
-from metapathpredict.models import ConfigurableCNN
-from metapathpredict.training import Trainer
-from metapathpredict.data import SequenceDataModule
-
 # Load configuration
 config = Config.from_yaml("config.yaml")
 

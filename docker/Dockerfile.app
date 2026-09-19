@@ -14,7 +14,7 @@ COPY requirements.txt .
 COPY pyproject.toml .
 
 # Install Python dependencies
-RUN pip install --no-cache-dir -e ".[pipeline,distributed]"
+RUN pip install --no-cache-dir -e ".[api]"
 
 # Copy source code
 COPY src/ src/
