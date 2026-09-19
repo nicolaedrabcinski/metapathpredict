@@ -103,6 +103,6 @@ nav:
     - Training: api/training.md
   - Deployment:
     - Docker: deployment/docker.md
-    - Cloud (GCP): deployment/cloud.md
+  - References: references.md
   - Contributing: contributing.md
   - Changelog: changelog.md

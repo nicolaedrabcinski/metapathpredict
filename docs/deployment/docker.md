@@ -411,4 +411,3 @@ docker run -v $(pwd)/logs:/logs \
     cache-to: type=gha,mode=max
 ```
 
-See [Cloud (GCP)](cloud.md) for Kubernetes deployment.
