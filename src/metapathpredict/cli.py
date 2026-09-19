@@ -273,11 +273,12 @@ def _train_contrastive(settings, device, data_module, output_dir, sink: MetricsS
         optimizer=optimizer,
         augmentation=augmentation,
         temperature=cfg.temperature,
-        use_supervised=(cfg.loss_type == "supcon"),
+        use_supervised=(cfg.loss_type in ("supcon", "hybrid")),
         device=device,
         tau_plus=cfg.debias_tau_plus,
         beta=cfg.hard_negative_beta,
         decoupled=(cfg.loss_type == "dcl"),
+        supcon_weight=cfg.supcon_weight if cfg.loss_type == "hybrid" else 1.0,
     )
 
     from tqdm import tqdm

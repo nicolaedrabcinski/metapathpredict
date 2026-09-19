@@ -80,6 +80,40 @@ class TestDecoupledLoss:
         assert ContrastiveConfig(loss_type="dcl").loss_type == "dcl"
 
 
+class TestHybridLoss:
+    def _trainer(self, **kw):
+        from metapathpredict.models.contrastive import ContrastiveEncoder, ContrastiveTrainer
+
+        enc = ContrastiveEncoder(backbone="small", projection_dim=32, hidden_dim=64, base_channels=16, num_classes=3)
+        return ContrastiveTrainer(enc, torch.optim.SGD(enc.parameters(), lr=0.1), temperature=0.2, device="cpu", **kw)
+
+    def test_hybrid_is_the_weighted_sum_of_supcon_and_ntxent(self):
+        z1, z2 = _pair()
+        labels = torch.arange(16) % 3
+        hybrid = self._trainer(use_supervised=True, supcon_weight=0.3)
+        sup = self._trainer(use_supervised=True)._compute_loss(z1, z2, labels).item()
+        inst = self._trainer()._compute_loss(z1, z2, labels).item()
+        got = hybrid._compute_loss(z1, z2, labels).item()
+        assert got == __import__("pytest").approx(0.3 * sup + 0.7 * inst, rel=1e-5)
+
+    def test_pure_supcon_and_unsupervised_paths_are_unchanged(self):
+        z1, z2 = _pair()
+        labels = torch.arange(16) % 3
+        assert self._trainer(use_supervised=True).instance_criterion is None
+        assert self._trainer()._compute_loss(z1, z2, None).item() == NTXentLoss(0.2)(z1, z2).item()
+        with __import__("pytest").raises(ValueError):
+            self._trainer(use_supervised=True)._compute_loss(z1, z2, None)
+        # without labels a supervised trainer falls back to the instance loss
+        assert self._trainer(use_supervised=True, supcon_weight=0.5)._compute_loss(z1, z2, None).item() == \
+            NTXentLoss(0.2)(z1, z2).item()
+
+    def test_loss_type_hybrid_is_a_valid_setting(self):
+        from metapathpredict.config.settings import ContrastiveConfig
+
+        cfg = ContrastiveConfig(loss_type="hybrid", supcon_weight=0.25)
+        assert cfg.loss_type == "hybrid" and cfg.supcon_weight == 0.25
+
+
 class TestPerSampleAugmentation:
     def _batch(self, n=64, length=100):
         base = F.one_hot(torch.randint(0, 4, (1, length)), 4).permute(0, 2, 1).float()

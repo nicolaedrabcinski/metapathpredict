@@ -531,6 +531,7 @@ class ContrastiveTrainer:
         tau_plus: float = 0.0,
         beta: float = 0.0,
         decoupled: bool = False,
+        supcon_weight: float = 1.0,
     ):
         """
         Initialize trainer.
@@ -545,14 +546,23 @@ class ContrastiveTrainer:
             tau_plus: Debiasing class prior for NT-Xent (ignored with SupCon).
             beta: Hard-negative concentration for NT-Xent (ignored with SupCon).
             decoupled: Use the decoupled NT-Xent (ignored with SupCon).
+            supcon_weight: With use_supervised, the share of the loss taken by SupCon; the rest is
+                instance-level NT-Xent (Perfectly Balanced: labels alone collapse within-class structure).
+                1.0 is pure SupCon.
         """
         self.encoder = encoder.to(device)
         self.optimizer = optimizer
         self.augmentation = augmentation or ContrastiveAugmentation()
         self.device = device
 
+        self.supcon_weight = supcon_weight if use_supervised else 0.0
+        self.instance_criterion = None
         if use_supervised:
             self.criterion = SupConLoss(temperature=temperature)
+            if supcon_weight < 1.0:
+                self.instance_criterion = NTXentLoss(
+                    temperature=temperature, tau_plus=tau_plus, beta=beta, decoupled=decoupled
+                )
         else:
             self.criterion = NTXentLoss(
                 temperature=temperature, tau_plus=tau_plus, beta=beta, decoupled=decoupled
@@ -561,12 +571,26 @@ class ContrastiveTrainer:
         self.use_supervised = use_supervised
         self._epoch_count = 0
 
-        loss_name = "SupConLoss" if use_supervised else "NTXentLoss"
+        loss_name = "NTXentLoss"
+        if use_supervised:
+            loss_name = "SupConLoss" if supcon_weight >= 1.0 else f"{supcon_weight:g}*SupConLoss+NTXentLoss"
         logger.info(
             f"ContrastiveTrainer initialized: loss={loss_name}, "
             f"temperature={temperature}, device={device}"
         )
     
+    def _compute_loss(self, z1: torch.Tensor, z2: torch.Tensor, labels: torch.Tensor | None) -> torch.Tensor:
+        if not self.use_supervised:
+            return self.criterion(z1, z2)
+        if labels is None:
+            if self.instance_criterion is None:
+                raise ValueError("SupCon needs labels, but the batch has none")
+            return self.instance_criterion(z1, z2)
+        supcon = self.criterion(torch.stack([z1, z2], dim=1), labels)
+        if self.instance_criterion is None:
+            return supcon
+        return self.supcon_weight * supcon + (1.0 - self.supcon_weight) * self.instance_criterion(z1, z2)
+
     def train_epoch(self, dataloader: DataLoader) -> float:
         """Train for one epoch."""
         self._epoch_count += 1
@@ -638,11 +662,7 @@ class ContrastiveTrainer:
                 all_emb_stds.append(emb_std)
 
             # Compute loss
-            if self.use_supervised and labels is not None:
-                features = torch.stack([z1, z2], dim=1)
-                loss = self.criterion(features, labels)
-            else:
-                loss = self.criterion(z1, z2)
+            loss = self._compute_loss(z1, z2, labels)
 
             # Backward
             self.optimizer.zero_grad()
@@ -753,11 +773,7 @@ class ContrastiveTrainer:
                 z1 = self.encoder(view1)
                 z2 = self.encoder(view2)
 
-                if self.use_supervised and labels is not None:
-                    features = torch.stack([z1, z2], dim=1)
-                    loss = self.criterion(features, labels)
-                else:
-                    loss = self.criterion(z1, z2)
+                loss = self._compute_loss(z1, z2, labels)
 
                 total_loss += loss.item()
 

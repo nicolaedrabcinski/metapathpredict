@@ -327,14 +327,17 @@ class ContrastiveConfig(BaseModel):
     )
 
     # Loss
-    loss_type: Literal["ntxent", "dcl", "supcon"] = Field(
+    loss_type: Literal["ntxent", "dcl", "supcon", "hybrid"] = Field(
         default="supcon",
         description=(
             "ntxent = SimCLR unsupervised, dcl = ntxent without the positive in the denominator "
-            "(decoupled), supcon = supervised contrastive"
+            "(decoupled), supcon = supervised contrastive, hybrid = supcon_weight * supcon + rest * ntxent"
         ),
     )
     temperature: float = Field(default=0.07, gt=0, le=1.0)
+    supcon_weight: float = Field(
+        default=0.5, ge=0.0, le=1.0, description="loss_type=hybrid: share of SupCon in the loss."
+    )
 
     # Augmentation
     mutation_rate: float = Field(default=0.1, ge=0.0, le=0.5)
