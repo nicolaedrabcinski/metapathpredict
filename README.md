@@ -49,21 +49,35 @@ bacteria, archaea, fungi, protozoa, plant, invertebrate, vertebrate, virus (~30 
 
 ```bash
 python scripts/download_diverse_genomes.py --output data/genomes
+
+# add genomes to reach the given totals per RefSeq group; each new genome is picked from the
+# family with the fewest genomes so far (--dry-run shows the plan without downloading)
+python scripts/download_diverse_genomes.py --extend plant=120,invertebrate=140,vertebrate_other=80,vertebrate_mammalian=40
 ```
+
+NCBI lineages of the genomes are cached in `data/genomes/lineages.json` (fetched on demand).
 
 ### 2. Prepare dataset (genomes → HDF5)
 
-Whole genomes are assigned to train/val/test, so val and test contain species the model
-never saw in training. The script verifies that no species appears in two splits.
+Whole genomes are assigned to train/val/test, and by default whole **families** stay together
+(`--split-by family`): val and test hold organisms with no relative of the same family in training.
+A species-only split (`--split-by genome`) still lets a genus or family sit on both sides, which
+makes accuracy look better than it is on new organisms. The script verifies that no species and no
+family appears in two splits. `--split-seed` gives a different random split; use several to see how
+much the results depend on which genomes ended up in the test set.
 
 ```bash
 metapathpredict prepare \
     --manifest data/genomes/manifest.tsv \
     --config configs/train_gpu.yaml \
-    --output data/datasets/taxa8 \
+    --output data/datasets/taxa8fam_s1 \
     --length 500 \
-    --fragments-per-class 30000
+    --fragments-per-class 30000 \
+    --split-by family --split-seed 1
 ```
+
+`split_assignments.tsv` in the output directory lists every genome with its split and lineage.
+For a dataset made before lineages were recorded: `python scripts/annotate_lineages.py <dataset_dir>`.
 
 ### 3. Train (Full Pipeline)
 
@@ -97,6 +111,20 @@ metapathpredict predict \
 metapathpredict evaluate \
     --model data/weights/taxa8/rl_best.pt \
     --data data/datasets/taxa8/encoded_test_500.hdf5
+```
+
+Fragments of one genome are right or wrong together, so a plain accuracy overstates how certain
+it is. With `test_fragments.fasta` next to the test file, `evaluate` (and every run made by
+`scripts/run_experiment.py`) also reports a 95% bootstrap interval that resamples whole genomes, and
+accuracy split by how close the nearest training genome of the class is (genus, family, order, ...;
+"near" = genus or family, "far" = the rest).
+
+Reference points and model comparisons:
+
+```bash
+python scripts/baselines.py kmer --k 4                       # 4-mer composition + gradient boosting
+python scripts/baselines.py supervised --augment rc          # same CNN, plain cross-entropy
+python scripts/compare_predictions.py A.npy B.npy --only far # is B better than A? paired bootstrap over genomes
 ```
 
 ## Training Pipelines
