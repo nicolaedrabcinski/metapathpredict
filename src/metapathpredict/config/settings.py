@@ -322,8 +322,12 @@ class ContrastiveConfig(BaseModel):
     hidden_dim: int = Field(default=256, ge=64)
 
     # Loss
-    loss_type: Literal["ntxent", "supcon"] = Field(
-        default="supcon", description="ntxent = SimCLR unsupervised, supcon = supervised contrastive"
+    loss_type: Literal["ntxent", "dcl", "supcon"] = Field(
+        default="supcon",
+        description=(
+            "ntxent = SimCLR unsupervised, dcl = ntxent without the positive in the denominator "
+            "(decoupled), supcon = supervised contrastive"
+        ),
     )
     temperature: float = Field(default=0.07, gt=0, le=1.0)
 

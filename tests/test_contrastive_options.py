@@ -49,6 +49,37 @@ class TestNTXentOptions:
         assert hard >= plain - 1e-6
 
 
+class TestDecoupledLoss:
+    def test_matches_the_paper_formula(self):
+        # L_i = -s(i, pos)/tau + log sum_{k not in {i, pos}} exp(s(i, k)/tau)
+        z1, z2 = _pair()
+        tau = 0.2
+        z = torch.cat([z1, z2])
+        sim = z @ z.t() / tau
+        n = len(z1)
+        expected = []
+        for i in range(2 * n):
+            pos = (i + n) % (2 * n)
+            neg = [k for k in range(2 * n) if k not in (i, pos)]
+            expected.append(-sim[i, pos] + torch.logsumexp(sim[i, neg], dim=0))
+        loss = NTXentLoss(tau, decoupled=True)(z1, z2)
+        assert loss.item() == __import__("pytest").approx(torch.stack(expected).mean().item(), rel=1e-4)
+
+    def test_is_lower_than_ntxent_and_has_gradient(self):
+        z1, z2 = _pair()
+        z1.requires_grad_(True)
+        plain = NTXentLoss(0.2)(z1.detach(), z2).item()
+        loss = NTXentLoss(0.2, decoupled=True)(z1, z2)
+        loss.backward()
+        assert torch.isfinite(loss) and loss.item() < plain
+        assert torch.isfinite(z1.grad).all() and z1.grad.abs().sum() > 0
+
+    def test_loss_type_dcl_is_a_valid_setting_and_builds_a_decoupled_criterion(self):
+        from metapathpredict.config.settings import ContrastiveConfig
+
+        assert ContrastiveConfig(loss_type="dcl").loss_type == "dcl"
+
+
 class TestPerSampleAugmentation:
     def _batch(self, n=64, length=100):
         base = F.one_hot(torch.randint(0, 4, (1, length)), 4).permute(0, 2, 1).float()

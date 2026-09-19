@@ -161,7 +161,9 @@ class NTXentLoss(nn.Module):
     The contrastive loss used in SimCLR.
     """
 
-    def __init__(self, temperature: float = 0.5, tau_plus: float = 0.0, beta: float = 0.0):
+    def __init__(
+        self, temperature: float = 0.5, tau_plus: float = 0.0, beta: float = 0.0, decoupled: bool = False
+    ):
         """
         Initialize NT-Xent loss.
 
@@ -172,14 +174,19 @@ class NTXentLoss(nn.Module):
             beta: Hard-negative concentration (Robinson et al. 2021): negatives are
                 reweighted by exp(beta * similarity). 0 disables it; beta=0 with
                 tau_plus>0 is the plain debiased loss.
+            decoupled: Decoupled contrastive loss (Yeh et al. 2022): the positive pair is removed
+                from the denominator, which removes the negative-positive coupling that weakens
+                the gradient at small batch sizes.
         """
         super().__init__()
         self.temperature = temperature
         self.tau_plus = tau_plus
         self.beta = beta
+        self.decoupled = decoupled
         self._call_count = 0
         logger.info(
-            f"NTXentLoss initialized: temperature={temperature}, tau_plus={tau_plus}, beta={beta}"
+            f"NTXentLoss initialized: temperature={temperature}, tau_plus={tau_plus}, beta={beta}, "
+            f"decoupled={decoupled}"
         )
     
     def forward(
@@ -217,7 +224,7 @@ class NTXentLoss(nn.Module):
             torch.arange(batch_size, device=device),
         ])
         
-        if self.tau_plus > 0 or self.beta > 0:
+        if self.tau_plus > 0 or self.beta > 0 or self.decoupled:
             loss = self._debiased_hard_negative_loss(sim, labels)
         else:
             loss = F.cross_entropy(sim, labels)
@@ -240,8 +247,8 @@ class NTXentLoss(nn.Module):
 
     def _debiased_hard_negative_loss(self, sim: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """
-        Debiased (tau_plus) and/or hard-negative-weighted (beta) contrastive loss, following the
-        reference implementations of Chuang et al. and Robinson et al.
+        Debiased (tau_plus), hard-negative-weighted (beta) and/or decoupled contrastive loss,
+        following the reference implementations of Chuang et al., Robinson et al. and Yeh et al.
 
         `sim` is the (2B, 2B) similarity matrix already divided by the temperature, with -inf on
         the diagonal; `labels[i]` is the index of anchor i's positive.
@@ -264,7 +271,8 @@ class NTXentLoss(nn.Module):
         # estimate of the true-negative term, kept above its theoretical minimum
         est = (neg_sum - self.tau_plus * n_neg * pos) / (1.0 - self.tau_plus)
         est = est.clamp_min(n_neg * math.exp(-1.0 / self.temperature))
-        return (-torch.log(pos / (pos + est))).mean()
+        denominator = est if self.decoupled else pos + est
+        return (-torch.log(pos / denominator)).mean()
 
 
 class SupConLoss(nn.Module):
@@ -513,6 +521,7 @@ class ContrastiveTrainer:
         device: torch.device | str = "cuda",
         tau_plus: float = 0.0,
         beta: float = 0.0,
+        decoupled: bool = False,
     ):
         """
         Initialize trainer.
@@ -526,6 +535,7 @@ class ContrastiveTrainer:
             device: Device to train on.
             tau_plus: Debiasing class prior for NT-Xent (ignored with SupCon).
             beta: Hard-negative concentration for NT-Xent (ignored with SupCon).
+            decoupled: Use the decoupled NT-Xent (ignored with SupCon).
         """
         self.encoder = encoder.to(device)
         self.optimizer = optimizer
@@ -535,7 +545,9 @@ class ContrastiveTrainer:
         if use_supervised:
             self.criterion = SupConLoss(temperature=temperature)
         else:
-            self.criterion = NTXentLoss(temperature=temperature, tau_plus=tau_plus, beta=beta)
+            self.criterion = NTXentLoss(
+                temperature=temperature, tau_plus=tau_plus, beta=beta, decoupled=decoupled
+            )
 
         self.use_supervised = use_supervised
         self._epoch_count = 0

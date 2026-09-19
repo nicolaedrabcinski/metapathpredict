@@ -276,6 +276,7 @@ def _train_contrastive(settings, device, data_module, output_dir, sink: MetricsS
         device=device,
         tau_plus=cfg.debias_tau_plus,
         beta=cfg.hard_negative_beta,
+        decoupled=(cfg.loss_type == "dcl"),
     )
 
     from tqdm import tqdm
