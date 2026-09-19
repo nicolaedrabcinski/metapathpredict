@@ -895,8 +895,22 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
 
 
 def _predict_single(model, model_type: str, x: torch.Tensor,
-                     algorithm: str = "actor_critic") -> tuple[int, float, list[float]]:
-    """Run single prediction, return (class_idx, confidence, probs)."""
+                     algorithm: str = "actor_critic",
+                     both_strands: bool = False) -> tuple[int, float, list[float]]:
+    """Run single prediction, return (class_idx, confidence, probs).
+
+    With both_strands the probabilities are averaged over the sequence and its reverse
+    complement (a fragment can come from either strand).
+    """
+    if both_strands:
+        from metapathpredict.models.contrastive import reverse_complement
+
+        _, _, forward = _predict_single(model, model_type, x, algorithm)
+        _, _, reverse = _predict_single(model, model_type, reverse_complement(x), algorithm)
+        probs = (torch.tensor(forward) + torch.tensor(reverse)) / 2
+        class_idx = probs.argmax().item()
+        return class_idx, probs[class_idx].item(), probs.tolist()
+
     import torch.nn.functional as F
 
     with torch.no_grad():
@@ -1483,7 +1497,8 @@ def prepare_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def _predict_split(checkpoint_path: Path, data_path: str, device, batch_size: int = 64):
+def _predict_split(checkpoint_path: Path, data_path: str, device, batch_size: int = 64,
+                   both_strands: bool = False):
     """Run a checkpoint over an HDF5 split. Returns (model_type, class_names, targets, predictions)."""
     from metapathpredict.data import HDF5SequenceDataset
     from torch.utils.data import DataLoader
@@ -1503,7 +1518,7 @@ def _predict_split(checkpoint_path: Path, data_path: str, device, batch_size: in
     for batch in loader:
         seqs, labels = batch[0].to(device), batch[1]
         for i in range(seqs.shape[0]):
-            class_idx, _, _ = _predict_single(model, model_type, seqs[i].unsqueeze(0), algorithm)
+            class_idx, _, _ = _predict_single(model, model_type, seqs[i].unsqueeze(0), algorithm, both_strands)
             preds.append(class_idx)
             targets.append(labels[i].item())
     return model_type, class_names, np.array(targets), np.array(preds)
@@ -1564,7 +1579,8 @@ def evaluate_command(args: argparse.Namespace) -> int:
 
     logger.info(f"Evaluating model from {checkpoint_path}")
     model_type, class_names, all_targets, all_preds = _predict_split(
-        checkpoint_path, args.data, device, batch_size=args.batch_size or 64
+        checkpoint_path, args.data, device, batch_size=args.batch_size or 64,
+        both_strands=args.both_strands,
     )
     report = _evaluation_report(class_names, all_targets, all_preds)
 
@@ -1666,6 +1682,8 @@ def main() -> int:
     eval_parser.add_argument("--config", "-c", help="Path to config file")
     eval_parser.add_argument("--batch-size", "-b", type=int, help="Batch size")
     eval_parser.add_argument("--device", help="Device (cuda/cpu)")
+    eval_parser.add_argument("--both-strands", action="store_true",
+                             help="Average predictions over each fragment and its reverse complement")
     eval_parser.set_defaults(func=evaluate_command)
     
     # Parse arguments
