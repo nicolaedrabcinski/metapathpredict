@@ -25,7 +25,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from metapathpredict.baselines import evaluate_accuracy, kmer_frequencies, train_supervised
+from metapathpredict.baselines import evaluate_accuracy, kmer_frequencies, load_backbone_weights, train_supervised
 from metapathpredict.cli import _evaluation_report, _report_to_metrics
 from metapathpredict.data.datamodule import _open_split
 from metapathpredict.experiment_tracking import MLflowSink
@@ -98,6 +98,9 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
 
     model = ConfigurableCNN(in_channels=4, num_classes=len(class_names), kernel_preset=args.backbone,
                             base_channels=args.base_channels, norm=args.norm)
+    if args.init_from:
+        loaded = load_backbone_weights(model, args.init_from)
+        logger.info(f"Initialised the backbone from {args.init_from} ({loaded} tensors); classifier head is new")
     name = args.name or f"ce_{args.augment}_aug"
     augmentation = ContrastiveAugmentation(mutation_rate=args.mutation_rate, mask_rate=args.mask_rate)
     with MLflowSink("baselines", run_name=name, tracking_uri=f"sqlite:///{REPO_ROOT / 'mlflow.db'}",
@@ -106,7 +109,7 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
                          "norm": args.norm, "augment": args.augment, "lr": args.lr, "weight_decay": args.weight_decay,
                          "batch_size": args.batch_size, "epochs": args.epochs, "patience": args.patience,
                          "seed": args.seed, "mutation_rate": args.mutation_rate, "mask_rate": args.mask_rate,
-                         "dataset": str(data_dir)})
+                         "init_from": args.init_from or "scratch", "dataset": str(data_dir)})
         start = time.time()
         fit = train_supervised(model, train_loader, val_loader, device, epochs=args.epochs, patience=args.patience,
                                lr=args.lr, weight_decay=args.weight_decay, augment=args.augment,
@@ -141,6 +144,7 @@ def main() -> None:
     sup.add_argument("--backbone", default="large")
     sup.add_argument("--base-channels", type=int, default=128)
     sup.add_argument("--norm", choices=["batch", "group"], default="batch")
+    sup.add_argument("--init-from", help="contrastive checkpoint whose backbone initialises the CNN")
     sup.add_argument("--mutation-rate", type=float, default=0.3, help="augment=full")
     sup.add_argument("--mask-rate", type=float, default=0.3, help="augment=full")
     sup.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")

@@ -5,8 +5,9 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from metapathpredict.baselines import evaluate_accuracy, kmer_frequencies, train_supervised
+from metapathpredict.baselines import evaluate_accuracy, kmer_frequencies, load_backbone_weights, train_supervised
 from metapathpredict.models.configurable_cnn import ConfigurableCNN
+from metapathpredict.models.contrastive import ContrastiveEncoder
 
 
 def _onehot(seq: str) -> np.ndarray:
@@ -67,3 +68,29 @@ def test_early_stopping_and_bad_augment_mode():
     assert len(out["history"]) < 30
     with pytest.raises(ValueError):
         train_supervised(model, loader, loader, "cpu", epochs=1, augment="bogus")
+
+
+def _contrastive_checkpoint(tmp_path, base_channels=16):
+    encoder = ContrastiveEncoder(backbone="small", projection_dim=32, hidden_dim=64,
+                                 base_channels=base_channels, num_classes=2)
+    path = tmp_path / "c.pt"
+    torch.save({"encoder_state_dict": encoder.state_dict()}, path)
+    return encoder, path
+
+
+def test_backbone_weights_are_loaded_and_the_head_stays_new(tmp_path):
+    encoder, path = _contrastive_checkpoint(tmp_path)
+    torch.manual_seed(1)
+    model = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16)
+    head_before = {k: v.clone() for k, v in model.classifier.state_dict().items()}
+    assert load_backbone_weights(model, path) > 0
+    for (name, want), (_, got) in zip(encoder.encoder.features.state_dict().items(), model.features.state_dict().items()):
+        assert torch.equal(want, got), name
+    for name, value in model.classifier.state_dict().items():
+        assert torch.equal(value, head_before[name])  # the contrastive head was not copied
+
+
+def test_backbone_mismatch_is_an_error_not_a_partial_load(tmp_path):
+    _, path = _contrastive_checkpoint(tmp_path, base_channels=16)
+    with pytest.raises(Exception):
+        load_backbone_weights(ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=32), path)

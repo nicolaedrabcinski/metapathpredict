@@ -49,6 +49,23 @@ def kmer_frequencies(sequences: np.ndarray, k: int = 4, chunk: int = 20000) -> n
     return out
 
 
+def load_backbone_weights(model: nn.Module, checkpoint_path) -> int:
+    """
+    Load the backbone of a contrastive checkpoint into a ConfigurableCNN classifier, leaving its
+    classifier head freshly initialised. Returns the number of tensors loaded; raises if the
+    architectures do not match (a silent partial load would make the comparison meaningless).
+    """
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    prefix = "encoder."
+    state = {k[len(prefix):]: v for k, v in checkpoint["encoder_state_dict"].items()
+             if k.startswith(prefix) and not k.startswith(prefix + "classifier.")}
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    missing = [k for k in missing if not k.startswith("classifier.")]
+    if missing or unexpected:
+        raise ValueError(f"backbone mismatch: missing {missing[:3]}, unexpected {unexpected[:3]}")
+    return len(state)
+
+
 def _augment(x: torch.Tensor, mode: str, augmentation: ContrastiveAugmentation | None) -> torch.Tensor:
     if mode == "none":
         return x
