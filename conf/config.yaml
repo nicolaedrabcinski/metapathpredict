@@ -35,6 +35,9 @@ contrastive:
   batch_size: 64
   early_stopping_patience: 7
   probe_epochs: 15
+  per_sample_augmentation: true
+  debias_tau_plus: 0.0
+  hard_negative_beta: 0.0
 
 rl:
   algorithm: "actor_critic"

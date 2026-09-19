@@ -8,6 +8,7 @@ robust sequence embeddings.
 from __future__ import annotations
 
 import logging
+import math
 import time
 
 import torch
@@ -160,17 +161,26 @@ class NTXentLoss(nn.Module):
     The contrastive loss used in SimCLR.
     """
 
-    def __init__(self, temperature: float = 0.5):
+    def __init__(self, temperature: float = 0.5, tau_plus: float = 0.0, beta: float = 0.0):
         """
         Initialize NT-Xent loss.
 
         Args:
             temperature: Temperature scaling factor.
+            tau_plus: Class prior for debiasing (Chuang et al. 2020): the chance that a
+                random "negative" actually belongs to the anchor's class. 0 disables it.
+            beta: Hard-negative concentration (Robinson et al. 2021): negatives are
+                reweighted by exp(beta * similarity). 0 disables it; beta=0 with
+                tau_plus>0 is the plain debiased loss.
         """
         super().__init__()
         self.temperature = temperature
+        self.tau_plus = tau_plus
+        self.beta = beta
         self._call_count = 0
-        logger.info(f"NTXentLoss initialized: temperature={temperature}")
+        logger.info(
+            f"NTXentLoss initialized: temperature={temperature}, tau_plus={tau_plus}, beta={beta}"
+        )
     
     def forward(
         self,
@@ -207,8 +217,10 @@ class NTXentLoss(nn.Module):
             torch.arange(batch_size, device=device),
         ])
         
-        # Cross entropy loss
-        loss = F.cross_entropy(sim, labels)
+        if self.tau_plus > 0 or self.beta > 0:
+            loss = self._debiased_hard_negative_loss(sim, labels)
+        else:
+            loss = F.cross_entropy(sim, labels)
 
         self._call_count += 1
         if self._call_count == 1:
@@ -224,6 +236,35 @@ class NTXentLoss(nn.Module):
                 )
 
         return loss
+
+
+    def _debiased_hard_negative_loss(self, sim: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
+        """
+        Debiased (tau_plus) and/or hard-negative-weighted (beta) contrastive loss, following the
+        reference implementations of Chuang et al. and Robinson et al.
+
+        `sim` is the (2B, 2B) similarity matrix already divided by the temperature, with -inf on
+        the diagonal; `labels[i]` is the index of anchor i's positive.
+        """
+        n_total = sim.size(0)
+        n_neg = n_total - 2  # everything except the anchor itself and its positive
+        exp_sim = torch.exp(sim)  # diagonal becomes 0
+        pos = exp_sim.gather(1, labels.unsqueeze(1)).squeeze(1)
+
+        neg = exp_sim.clone()
+        neg.scatter_(1, labels.unsqueeze(1), 0.0)
+
+        if self.beta > 0:
+            # weights proportional to exp(beta * sim) on true negatives, normalised to mean 1
+            weights = torch.where(neg > 0, neg.clamp_min(1e-30) ** self.beta, torch.zeros_like(neg))
+            neg_sum = (weights * neg).sum(dim=1) / (weights.sum(dim=1) / n_neg)
+        else:
+            neg_sum = neg.sum(dim=1)
+
+        # estimate of the true-negative term, kept above its theoretical minimum
+        est = (neg_sum - self.tau_plus * n_neg * pos) / (1.0 - self.tau_plus)
+        est = est.clamp_min(n_neg * math.exp(-1.0 / self.temperature))
+        return (-torch.log(pos / (pos + est))).mean()
 
 
 class SupConLoss(nn.Module):
@@ -339,6 +380,7 @@ class ContrastiveAugmentation(nn.Module):
         mutation_rate: float = 0.1,
         mask_rate: float = 0.15,
         crop_ratio: tuple[float, float] = (0.8, 1.0),
+        per_sample: bool = True,
     ):
         """
         Initialize augmentations.
@@ -347,11 +389,16 @@ class ContrastiveAugmentation(nn.Module):
             mutation_rate: Random mutation probability.
             mask_rate: Masking probability.
             crop_ratio: Random crop ratio range.
+            per_sample: Draw the crop window and the reverse-complement decision
+                independently for every sequence. False reproduces the earlier
+                behaviour where one crop and one decision were drawn per batch,
+                so every sequence in the batch was cut at the same place.
         """
         super().__init__()
         self.mutation_rate = mutation_rate
         self.mask_rate = mask_rate
         self.crop_ratio = crop_ratio
+        self.per_sample = per_sample
         self._call_count = 0
         logger.info(
             f"ContrastiveAugmentation: mutation_rate={mutation_rate}, "
@@ -389,8 +436,7 @@ class ContrastiveAugmentation(nn.Module):
         # View 1: crop -> mutation -> optional reverse complement
         view1 = self.random_crop(x)
         view1 = self.random_mutation(view1)
-        if torch.rand(1).item() > 0.5:
-            view1 = self.reverse_complement(view1)
+        view1 = self._maybe_reverse_complement(view1)
 
         # View 2: crop -> mask -> mutation
         view2 = self.random_crop(x)
@@ -411,8 +457,34 @@ class ContrastiveAugmentation(nn.Module):
 
         return view1, view2
 
+    def _maybe_reverse_complement(self, x: torch.Tensor) -> torch.Tensor:
+        """Reverse-complement with probability 0.5: per sequence, or once for the whole batch."""
+        if not self.per_sample:
+            return self.reverse_complement(x) if torch.rand(1).item() > 0.5 else x
+        flip = torch.rand(x.size(0), 1, 1, device=x.device) > 0.5
+        return torch.where(flip, self.reverse_complement(x), x)
+
+    def _random_crop_per_sample(self, x: torch.Tensor) -> torch.Tensor:
+        """Per-sequence crop: each sequence gets its own window length, source and destination."""
+        batch_size, _, seq_len = x.shape
+        lo, hi = self.crop_ratio
+        crop_len = (seq_len * (lo + (hi - lo) * torch.rand(batch_size, device=x.device))).long()
+        crop_len = crop_len.clamp(1, seq_len)
+        slack = seq_len - crop_len
+        src = (torch.rand(batch_size, device=x.device) * (slack + 1)).long().clamp_max(slack)
+        dst = (torch.rand(batch_size, device=x.device) * (slack + 1)).long().clamp_max(slack)
+
+        pos = torch.arange(seq_len, device=x.device).unsqueeze(0)  # (1, L)
+        offset = pos - dst.unsqueeze(1)  # position inside the window
+        valid = (offset >= 0) & (offset < crop_len.unsqueeze(1))
+        index = (src.unsqueeze(1) + offset).clamp(0, seq_len - 1)  # (B, L)
+        gathered = torch.gather(x, 2, index.unsqueeze(1).expand(-1, x.size(1), -1))
+        return gathered * valid.unsqueeze(1).to(x.dtype)
+
     def random_crop(self, x: torch.Tensor) -> torch.Tensor:
         """Случайное вырезание подпоследовательности с дополнением нулями."""
+        if self.per_sample:
+            return self._random_crop_per_sample(x)
         batch_size, channels, seq_len = x.shape
         # Случайная длина обрезки в пределах crop_ratio
         crop_len = int(seq_len * torch.empty(1).uniform_(*self.crop_ratio).item())
@@ -439,6 +511,8 @@ class ContrastiveTrainer:
         temperature: float = 0.5,
         use_supervised: bool = False,
         device: torch.device | str = "cuda",
+        tau_plus: float = 0.0,
+        beta: float = 0.0,
     ):
         """
         Initialize trainer.
@@ -450,6 +524,8 @@ class ContrastiveTrainer:
             temperature: Temperature for loss.
             use_supervised: Whether to use supervised contrastive loss.
             device: Device to train on.
+            tau_plus: Debiasing class prior for NT-Xent (ignored with SupCon).
+            beta: Hard-negative concentration for NT-Xent (ignored with SupCon).
         """
         self.encoder = encoder.to(device)
         self.optimizer = optimizer
@@ -459,7 +535,7 @@ class ContrastiveTrainer:
         if use_supervised:
             self.criterion = SupConLoss(temperature=temperature)
         else:
-            self.criterion = NTXentLoss(temperature=temperature)
+            self.criterion = NTXentLoss(temperature=temperature, tau_plus=tau_plus, beta=beta)
 
         self.use_supervised = use_supervised
         self._epoch_count = 0
@@ -615,16 +691,25 @@ class ContrastiveTrainer:
 
         return avg_loss
 
-    def validate_epoch(self, dataloader: DataLoader) -> float:
+    def validate_epoch(self, dataloader: DataLoader, metric_samples: int = 4096) -> float:
         """
         Compute the same contrastive loss on held-out data, no gradient/optimizer
         step. Lets training pick the checkpoint that generalizes instead of the
         one with the lowest train loss, and gives a train-vs-val curve to spot
         overfitting (val loss flattening or rising while train loss keeps falling).
+
+        Also fills `last_val_metrics` from the first `metric_samples` validation samples:
+        alignment (mean squared distance between the two views of a sample), uniformity
+        (Wang & Isola: log mean exp(-2 d^2) over pairs) and the effective rank of the
+        projection and of the backbone embedding. Unlike the NT-Xent value these do not
+        depend on the batch size, and the rank shows dimensional collapse that a healthy
+        per-dimension std can hide.
         """
         self.encoder.eval()
         total_loss = 0.0
         num_batches = len(dataloader)
+        z1_all, z2_all, h_all = [], [], []
+        collected = 0
 
         with torch.no_grad():
             for batch in dataloader:
@@ -647,8 +732,37 @@ class ContrastiveTrainer:
 
                 total_loss += loss.item()
 
+                if collected < metric_samples:
+                    z1_all.append(z1)
+                    z2_all.append(z2)
+                    h_all.append(self.encoder.get_embeddings(view1))
+                    collected += z1.size(0)
+
+        self.last_val_metrics = self._representation_metrics(
+            torch.cat(z1_all)[:metric_samples],
+            torch.cat(z2_all)[:metric_samples],
+            torch.cat(h_all)[:metric_samples],
+        )
         self.encoder.train()
         return total_loss / num_batches
+
+    @staticmethod
+    def _effective_rank(x: torch.Tensor) -> float:
+        """exp(entropy of the normalised singular values) of the centred matrix (Roy & Vetterli)."""
+        s = torch.linalg.svdvals((x - x.mean(dim=0, keepdim=True)).float())
+        p = s / s.sum().clamp_min(1e-12)
+        return torch.exp(-(p * torch.log(p.clamp_min(1e-12))).sum()).item()
+
+    @classmethod
+    def _representation_metrics(cls, z1: torch.Tensor, z2: torch.Tensor, h: torch.Tensor) -> dict[str, float]:
+        alignment = (z1 - z2).pow(2).sum(dim=1).mean().item()
+        uniformity = torch.log(torch.exp(-2.0 * torch.pdist(z1.float()).pow(2)).mean()).item()
+        return {
+            "alignment": alignment,
+            "uniformity": uniformity,
+            "erank_projection": cls._effective_rank(z1),
+            "erank_backbone": cls._effective_rank(h),
+        }
 
     def get_embeddings(self, dataloader: DataLoader) -> tuple[torch.Tensor, torch.Tensor]:
         """Extract embeddings for downstream tasks."""

@@ -253,6 +253,7 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
     augmentation = ContrastiveAugmentation(
         mutation_rate=cfg.mutation_rate,
         mask_rate=cfg.mask_rate,
+        per_sample=cfg.per_sample_augmentation,
     )
 
     optimizer = torch.optim.AdamW(
@@ -269,6 +270,8 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
         temperature=cfg.temperature,
         use_supervised=(cfg.loss_type == "supcon"),
         device=device,
+        tau_plus=cfg.debias_tau_plus,
+        beta=cfg.hard_negative_beta,
     )
 
     from tqdm import tqdm
@@ -296,6 +299,12 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
         loss = trainer.train_epoch(train_loader)
         val_loss = trainer.validate_epoch(val_loader)
         elapsed = time.time() - t0_epoch
+        m = trainer.last_val_metrics
+        logger.info(
+            f"  Val representation: alignment={m['alignment']:.4f}, uniformity={m['uniformity']:.4f}, "
+            f"erank(projection)={m['erank_projection']:.1f}/{settings.contrastive.projection_dim}, "
+            f"erank(backbone)={m['erank_backbone']:.1f}/{encoder.embed_dim}"
+        )
 
         improved = ""
         if val_loss < best_val_loss:

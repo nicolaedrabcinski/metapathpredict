@@ -340,6 +340,18 @@ class ContrastiveConfig(BaseModel):
         default=3, ge=0,
         description="Stop if val loss doesn't improve for this many epochs. 0 disables it.",
     )
+    per_sample_augmentation: bool = Field(
+        default=True,
+        description="Draw crop window and reverse-complement per sequence (False: once per batch).",
+    )
+    debias_tau_plus: float = Field(
+        default=0.0, ge=0.0, lt=1.0,
+        description="NT-Xent debiasing class prior (Chuang et al.); 0 disables. 1/num_classes for balanced classes.",
+    )
+    hard_negative_beta: float = Field(
+        default=0.0, ge=0.0,
+        description="NT-Xent hard-negative concentration (Robinson et al.); 0 disables.",
+    )
     probe_epochs: int = Field(
         default=3, ge=1,
         description="Epochs for the linear-probe classifier head fit after contrastive pretraining.",
