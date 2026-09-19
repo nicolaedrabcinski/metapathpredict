@@ -89,6 +89,34 @@ def evaluate_accuracy(model: nn.Module, loader, device) -> tuple[float, np.ndarr
     return float((targets == preds).mean()), targets, preds
 
 
+def predict_probabilities(model: nn.Module, loader, device) -> tuple[np.ndarray, np.ndarray]:
+    """Targets [n] and softmax probabilities [n, classes] of `model` (eval mode) over a loader."""
+    model.eval()
+    targets, probs = [], []
+    with torch.no_grad():
+        for batch in loader:
+            probs.append(F.softmax(model(batch[0].to(device)), dim=1).cpu())
+            targets.append(batch[1])
+    return torch.cat(targets).numpy(), torch.cat(probs).numpy()
+
+
+def save_supervised_checkpoint(model: nn.Module, path, config: dict) -> None:
+    """Weights of a ConfigurableCNN classifier with what is needed to rebuild it (see load_supervised_checkpoint)."""
+    torch.save({"state_dict": model.state_dict(), "config": config}, path)
+
+
+def load_supervised_checkpoint(path, device="cpu") -> nn.Module:
+    """Rebuild the ConfigurableCNN saved by save_supervised_checkpoint, in eval mode."""
+    from metapathpredict.models.configurable_cnn import ConfigurableCNN
+
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    config = checkpoint["config"]
+    model = ConfigurableCNN(in_channels=4, num_classes=config["num_classes"], kernel_preset=config["backbone"],
+                            base_channels=config["base_channels"], norm=config.get("norm", "batch"))
+    model.load_state_dict(checkpoint["state_dict"])
+    return model.to(device).eval()
+
+
 def train_supervised(
     model: nn.Module,
     train_loader,
@@ -101,16 +129,21 @@ def train_supervised(
     augment: str = "rc",
     augmentation: ContrastiveAugmentation | None = None,
     sink=None,
+    lr_schedule: str = "constant",
 ) -> dict:
     """
     Train `model` (a classifier: [batch, 4, length] -> logits) with cross-entropy and keep the weights
     of the epoch with the best validation accuracy. `augment`: none | rc (random reverse complement) |
-    full (the contrastive augmentation, first view only). Returns {"best_val_acc", "best_epoch", "history"}.
+    full (the contrastive augmentation, first view only). `lr_schedule`: constant | cosine (annealed to 0 over
+    `epochs`). Returns {"best_val_acc", "best_epoch", "history"}.
     """
+    if lr_schedule not in ("constant", "cosine"):
+        raise ValueError(f"lr_schedule must be constant or cosine, got {lr_schedule!r}")
     if augment == "full" and augmentation is None:
         augmentation = ContrastiveAugmentation()
     model.to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if lr_schedule == "cosine" else None
     best_acc, best_epoch, best_state, stale, history = -1.0, 0, None, 0, []
 
     for epoch in range(1, epochs + 1):
@@ -127,6 +160,8 @@ def train_supervised(
             correct += (logits.argmax(dim=1) == y).sum().item()
             seen += len(y)
 
+        if scheduler is not None:
+            scheduler.step()
         val_acc, _, _ = evaluate_accuracy(model, val_loader, device)
         row = {"epoch": epoch, "train_loss": total / seen, "train_acc": correct / seen, "val_acc": val_acc}
         history.append(row)

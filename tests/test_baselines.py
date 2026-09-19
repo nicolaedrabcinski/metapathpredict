@@ -5,7 +5,15 @@ import pytest
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from metapathpredict.baselines import evaluate_accuracy, kmer_frequencies, load_backbone_weights, train_supervised
+from metapathpredict.baselines import (
+    evaluate_accuracy,
+    kmer_frequencies,
+    load_backbone_weights,
+    load_supervised_checkpoint,
+    predict_probabilities,
+    save_supervised_checkpoint,
+    train_supervised,
+)
 from metapathpredict.models.configurable_cnn import ConfigurableCNN
 from metapathpredict.models.contrastive import ContrastiveEncoder
 
@@ -94,3 +102,45 @@ def test_backbone_mismatch_is_an_error_not_a_partial_load(tmp_path):
     _, path = _contrastive_checkpoint(tmp_path, base_channels=16)
     with pytest.raises(Exception):
         load_backbone_weights(ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=32), path)
+
+
+def test_probabilities_sum_to_one_and_agree_with_the_argmax_accuracy():
+    torch.manual_seed(0)
+    x, y = _gc_data()
+    loader = DataLoader(TensorDataset(x, y), batch_size=64)
+    model = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16)
+    targets, probs = predict_probabilities(model, loader, "cpu")
+    assert probs.shape == (len(y), 2) and np.allclose(probs.sum(axis=1), 1.0, atol=1e-5)
+    assert (probs.argmax(axis=1) == targets).mean() == pytest.approx(evaluate_accuracy(model, loader, "cpu")[0])
+
+
+def test_checkpoint_round_trip_rebuilds_the_same_model(tmp_path):
+    torch.manual_seed(0)
+    x, y = _gc_data(n=64)
+    model = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16, norm="group").eval()
+    path = tmp_path / "model.pt"
+    save_supervised_checkpoint(model, path, {"backbone": "small", "base_channels": 16, "norm": "group", "num_classes": 2})
+    loaded = load_supervised_checkpoint(path)
+    with torch.no_grad():
+        assert torch.allclose(model(x), loaded(x), atol=1e-6)
+
+
+def test_cosine_schedule_anneals_the_learning_rate_and_bad_names_are_rejected(monkeypatch):
+    created = []
+
+    class Spy(torch.optim.AdamW):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    monkeypatch.setattr(torch.optim, "AdamW", Spy)
+    torch.manual_seed(0)
+    x, y = _gc_data(n=64)
+    loader = DataLoader(TensorDataset(x, y), batch_size=32)
+    model = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16)
+    train_supervised(model, loader, loader, "cpu", epochs=4, patience=0, lr=1e-2, lr_schedule="cosine")
+    assert created[-1].param_groups[0]["lr"] == pytest.approx(0.0, abs=1e-9)  # annealed to zero over the run
+    train_supervised(model, loader, loader, "cpu", epochs=2, patience=0, lr=1e-2)
+    assert created[-1].param_groups[0]["lr"] == pytest.approx(1e-2)  # constant by default
+    with pytest.raises(ValueError):
+        train_supervised(model, loader, loader, "cpu", epochs=1, lr_schedule="linear")

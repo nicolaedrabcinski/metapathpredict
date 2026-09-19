@@ -25,7 +25,13 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from metapathpredict.baselines import evaluate_accuracy, kmer_frequencies, load_backbone_weights, train_supervised
+from metapathpredict.baselines import (
+    kmer_frequencies,
+    load_backbone_weights,
+    predict_probabilities,
+    save_supervised_checkpoint,
+    train_supervised,
+)
 from metapathpredict.cli import _evaluation_report, _report_to_metrics
 from metapathpredict.data.datamodule import _open_split
 from metapathpredict.experiment_tracking import MLflowSink
@@ -38,11 +44,14 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(name)s - %(level
 logger = logging.getLogger("baselines")
 
 
-def _finish(sink: MLflowSink, out_dir: Path, data_dir: Path, class_names: list[str], targets, preds, extra: dict) -> None:
+def _finish(sink: MLflowSink, out_dir: Path, data_dir: Path, class_names: list[str], targets, preds, extra: dict,
+            probs=None) -> None:
     report = _evaluation_report(class_names, targets, preds)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "test.json").write_text(json.dumps(report, indent=2))
     np.save(out_dir / "test_predictions.npy", np.asarray(preds, dtype=np.int8))
+    if probs is not None:  # class probabilities of every test fragment, for aggregating fragments of one genome
+        np.save(out_dir / "test_probabilities.npy", np.asarray(probs, dtype=np.float16))
     sink.log_metrics(_report_to_metrics(report, "test/baseline"))
     genome = evaluate_by_genome(data_dir, targets, preds, class_names)
     if genome:
@@ -73,10 +82,11 @@ def run_kmer(args, data_dir: Path, class_names: list[str]) -> None:
             scaler = StandardScaler().fit(x_train)
             model = LogisticRegression(max_iter=300).fit(scaler.transform(x_train), y_train)
             predict = lambda x: model.predict(scaler.transform(x))
+            predict_proba = lambda x: model.predict_proba(scaler.transform(x))
         else:
             model = HistGradientBoostingClassifier(max_iter=args.iterations, early_stopping=False, random_state=args.seed)
             model.fit(x_train, y_train)
-            predict = model.predict
+            predict, predict_proba = model.predict, model.predict_proba
         val_acc = float((predict(x_val) == y_val).mean())
         logger.info(f"{name}: val accuracy {val_acc:.4f} ({time.time() - start:.0f}s)")
         with MLflowSink("baselines", run_name=name, tracking_uri=f"sqlite:///{REPO_ROOT / 'mlflow.db'}",
@@ -84,7 +94,7 @@ def run_kmer(args, data_dir: Path, class_names: list[str]) -> None:
             sink.log_params({"model": model_name, "k": args.k, "iterations": args.iterations, "seed": args.seed,
                              "features": int(4 ** args.k), "dataset": str(data_dir)})
             _finish(sink, REPO_ROOT / "experiments" / "baselines" / name, data_dir, class_names, y_test,
-                    predict(x_test), {"baseline/val_accuracy": val_acc})
+                    predict(x_test), {"baseline/val_accuracy": val_acc}, probs=predict_proba(x_test))
 
 
 def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
@@ -109,15 +119,21 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
                          "norm": args.norm, "augment": args.augment, "lr": args.lr, "weight_decay": args.weight_decay,
                          "batch_size": args.batch_size, "epochs": args.epochs, "patience": args.patience,
                          "seed": args.seed, "mutation_rate": args.mutation_rate, "mask_rate": args.mask_rate,
-                         "init_from": args.init_from or "scratch", "dataset": str(data_dir)})
+                         "init_from": args.init_from or "scratch", "lr_schedule": args.lr_schedule,
+                         "dataset": str(data_dir)})
         start = time.time()
         fit = train_supervised(model, train_loader, val_loader, device, epochs=args.epochs, patience=args.patience,
                                lr=args.lr, weight_decay=args.weight_decay, augment=args.augment,
-                               augmentation=augmentation, sink=sink)
+                               augmentation=augmentation, sink=sink, lr_schedule=args.lr_schedule)
         logger.info(f"best val accuracy {fit['best_val_acc']:.4f} at epoch {fit['best_epoch']} ({time.time() - start:.0f}s)")
-        _, targets, preds = evaluate_accuracy(model, test_loader, device)
-        _finish(sink, REPO_ROOT / "experiments" / "baselines" / name, data_dir, class_names, targets, preds,
-                {"baseline/val_accuracy": fit["best_val_acc"], "baseline/best_epoch": fit["best_epoch"]})
+        targets, probs = predict_probabilities(model, test_loader, device)
+        out_dir = REPO_ROOT / "experiments" / "baselines" / name
+        _finish(sink, out_dir, data_dir, class_names, targets, probs.argmax(axis=1),
+                {"baseline/val_accuracy": fit["best_val_acc"], "baseline/best_epoch": fit["best_epoch"]}, probs=probs)
+        if args.save_checkpoint:
+            save_supervised_checkpoint(model, out_dir / "model.pt", {
+                "backbone": args.backbone, "base_channels": args.base_channels, "norm": args.norm,
+                "num_classes": len(class_names), "class_names": class_names, "best_epoch": fit["best_epoch"]})
 
 
 def main() -> None:
@@ -145,6 +161,8 @@ def main() -> None:
     sup.add_argument("--base-channels", type=int, default=128)
     sup.add_argument("--norm", choices=["batch", "group"], default="batch")
     sup.add_argument("--init-from", help="contrastive checkpoint whose backbone initialises the CNN")
+    sup.add_argument("--lr-schedule", choices=["constant", "cosine"], default="constant")
+    sup.add_argument("--save-checkpoint", action="store_true", help="also save the weights as model.pt")
     sup.add_argument("--mutation-rate", type=float, default=0.3, help="augment=full")
     sup.add_argument("--mask-rate", type=float, default=0.3, help="augment=full")
     sup.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
