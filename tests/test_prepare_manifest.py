@@ -272,3 +272,86 @@ class TestFamilySplit:
         assert len(targets) == len(fragment_genomes(out, "train")) and (targets >= 0).all() and len(phyla) > 1
         meta = json.loads((tmp_path / "out" / "metadata.json").read_text())
         assert meta["split_by"] == "family" and meta["split_seed"] == 7 and "family-disjoint" in meta["split_method"]
+
+
+class TestFixedSplits:
+    RATIOS = {"train": 0.7, "val": 0.15, "test": 0.15}
+
+    def test_fixed_genomes_keep_their_split_and_their_whole_family_follows(self):
+        from metapathpredict.cli import _assign_group_splits
+
+        groups = ["a", "a", "b", "c", "c", "d", "e", "f", "g", "h"]
+        fixed = ["test", None, None, "val", None, None, None, None, None, None]      # "a" is anchored in test, "c" in val
+        splits = _assign_group_splits(groups, self.RATIOS, np.random.RandomState(0), fixed=fixed)
+        assert splits[0] == "test" and splits[1] == "test"                            # the new member of "a" follows
+        assert splits[3] == "val" and splits[4] == "val"
+        by_group = {}
+        for g, s in zip(groups, splits):
+            by_group.setdefault(g, set()).add(s)
+        assert all(len(v) == 1 for v in by_group.values())                           # still family-disjoint
+
+    def test_new_families_fill_the_splits_that_are_short(self):
+        from metapathpredict.cli import _assign_group_splits
+
+        groups = [f"old{i}" for i in range(6)] + [f"new{i}" for i in range(14)]
+        fixed = ["train"] * 6 + [None] * 14                                          # six anchored train genomes, 20 in total
+        splits = _assign_group_splits(groups, self.RATIOS, np.random.RandomState(0), fixed=fixed)
+        assert set(splits[:6]) == {"train"}
+        counts = {s: splits.count(s) for s in self.RATIOS}
+        assert counts["val"] >= 2 and counts["test"] >= 2 and abs(counts["train"] - 14) <= 2
+
+    def test_conflicting_anchors_are_an_error(self):
+        from metapathpredict.cli import _assign_group_splits
+
+        with pytest.raises(ValueError):
+            _assign_group_splits(["a", "a", "b"], self.RATIOS, np.random.RandomState(0), fixed=["train", "test", None])
+
+    def test_without_fixed_splits_nothing_changes(self):
+        from metapathpredict.cli import _assign_group_splits
+
+        groups = [f"f{i}" for i in range(20) for _ in range(2)]
+        a = _assign_group_splits(groups, self.RATIOS, np.random.RandomState(3))
+        b = _assign_group_splits(groups, self.RATIOS, np.random.RandomState(3), fixed=[None] * len(groups))
+        assert a == b
+
+    def test_prepare_with_fixed_splits_reproduces_the_earlier_assignment(self, tmp_path):
+        import json
+
+        rng = np.random.RandomState(0)
+        rows, lineages = [], {}
+        (tmp_path / "genomes").mkdir()
+        for gi, group in enumerate(NCBI_GROUP_TO_TAXON):
+            for k in range(6):
+                acc, taxid = f"GCF_{gi:03d}{k:03d}.1", str(1000 * gi + k)
+                seq = "".join(rng.choice(list("ACGT"), size=4000))
+                with gzip.open(tmp_path / "genomes" / f"{acc}.fna.gz", "wt") as f:
+                    f.write(f">{acc}\n{seq}\n")
+                rows.append({"accession": acc, "group": group, "species_taxid": taxid, "organism": f"Testus {group}{k}",
+                             "genome_size": "4000", "path": f"genomes/{acc}.fna.gz"})
+                lineages[taxid] = {"phylum": "P", "class": "C", "order": f"O{gi}", "family": f"F{gi}_{k // 2}", "genus": f"G{gi}_{k}"}
+        (tmp_path / "lineages.json").write_text(json.dumps(lineages))
+
+        def write_manifest(path, subset):
+            with open(path, "w", newline="") as f:
+                w = csv.DictWriter(f, fieldnames=list(rows[0]), delimiter="\t")
+                w.writeheader()
+                w.writerows(subset)
+
+        def prepare(manifest, out, fixed=None, seed=5):
+            return prepare_command(argparse.Namespace(
+                inputs=[], manifest=str(manifest), output=str(out), config=None, length=100, max_fragments=None,
+                chunk_size=50, fragments_per_class=120, split_by="family", split_seed=seed, fixed_splits=fixed))
+
+        old_rows = [r for r in rows if not r["accession"].endswith(("4.1", "5.1"))]            # 4 of 6 genomes per class
+        write_manifest(tmp_path / "old.tsv", old_rows)
+        write_manifest(tmp_path / "all.tsv", rows)
+        assert prepare(tmp_path / "old.tsv", tmp_path / "old") == 0
+        assert prepare(tmp_path / "all.tsv", tmp_path / "new", fixed=tmp_path / "old" / "split_assignments.tsv", seed=99) == 0
+        read = lambda d: {a["accession"]: a for a in csv.DictReader(open(tmp_path / d / "split_assignments.tsv"), delimiter="\t")}
+        old, new = read("old"), read("new")
+        assert len(new) == len(rows) > len(old)
+        assert all(new[acc]["split"] == a["split"] for acc, a in old.items())                  # old genomes stayed put
+        family_splits = {}
+        for a in new.values():
+            family_splits.setdefault(a["lineage_family"], set()).add(a["split"])
+        assert all(len(v) == 1 for v in family_splits.values())                                # and families stay together

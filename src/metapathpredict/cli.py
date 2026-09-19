@@ -1076,23 +1076,39 @@ def _assign_sequence_splits(
     return splits
 
 
-def _assign_group_splits(groups: list[str], ratios: dict[str, float], rng: np.random.RandomState) -> list[str]:
+def _assign_group_splits(groups: list[str], ratios: dict[str, float], rng: np.random.RandomState,
+                         fixed: list[str | None] | None = None) -> list[str]:
     """
     Assign whole groups (e.g. families) to train/val/test so the share of genomes in each split follows
     `ratios`. Groups are placed largest first into the split with the largest remaining deficit, ties
     broken at random; every split gets at least one group when there are enough groups.
+
+    `fixed[i]` is a split already decided for genome i (or None). A group with a fixed member goes to that
+    split as a whole - so families stay together when genomes are added to an existing dataset - and counts
+    towards that split's load before the other groups are placed. Two members fixed to different splits are
+    an error.
     """
     names = list(ratios)
     members: dict[str, list[int]] = {}
     for index, group in enumerate(groups):
         members.setdefault(group, []).append(index)
-    keys = list(members)
+    forced: dict[str, str] = {}
+    for key, indices in members.items():
+        splits = {fixed[i] for i in indices if fixed and fixed[i] is not None}
+        if len(splits) > 1:
+            raise ValueError(f"group {key!r} has genomes fixed to different splits: {sorted(splits)}")
+        if splits:
+            forced[key] = splits.pop()
+    keys = [k for k in members if k not in forced]
     rng.shuffle(keys)
     keys.sort(key=lambda k: -len(members[k]))  # stable: equal-sized groups stay in random order
 
     targets = {s: ratios[s] * len(groups) for s in names}
     load = {s: 0 for s in names}
     placed: dict[str, list[str]] = {s: [] for s in names}
+    for key, split in forced.items():
+        placed[split].append(key)
+        load[split] += len(members[key])
     for key in keys:
         split = max(names, key=lambda s: targets[s] - load[s])
         placed[split].append(key)
@@ -1103,7 +1119,10 @@ def _assign_group_splits(groups: list[str], ratios: dict[str, float], rng: np.ra
         if not donors:
             break
         donor = max(donors, key=lambda s: load[s])
-        smallest = min(placed[donor], key=lambda k: len(members[k]))
+        movable = [k for k in placed[donor] if k not in forced]
+        if not movable:
+            break
+        smallest = min(movable, key=lambda k: len(members[k]))
         placed[donor].remove(smallest)
         placed[empty].append(smallest)
         load[donor] -= len(members[smallest])
@@ -1217,6 +1236,14 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
     per_class = args.fragments_per_class
     split_by = getattr(args, "split_by", "genome")
     split_seed = getattr(args, "split_seed", 42)
+    fixed_splits: dict[str, str] = {}
+    if getattr(args, "fixed_splits", None):
+        if split_by != "family":
+            logger.error("--fixed-splits needs --split-by family")
+            return 1
+        with open(args.fixed_splits, newline="") as f:
+            fixed_splits = {r["accession"]: r["split"] for r in csv.DictReader(f, delimiter="\t")}
+        logger.info(f"Keeping the split of {len(fixed_splits)} genomes from {args.fixed_splits}")
     rng = np.random.RandomState(split_seed)
     from metapathpredict.taxonomy import fetch_lineages, lineage_columns, lineage_of, load_lineages
 
@@ -1252,7 +1279,8 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
     for label, name in enumerate(TAXON_CLASSES):
         genomes = sorted(by_class[name], key=lambda r: r["accession"])
         if split_by == "family":
-            genome_split = _assign_group_splits([group_key(g) for g in genomes], ratios, rng)
+            genome_split = _assign_group_splits([group_key(g) for g in genomes], ratios, rng,
+                                                fixed=[fixed_splits.get(g["accession"]) for g in genomes] if fixed_splits else None)
         else:
             genome_split = _assign_sequence_splits(
                 len(genomes), ratios["train"], ratios["val"], ratios["test"], rng
@@ -1754,6 +1782,9 @@ def main() -> int:
                                 help="With --manifest: family keeps every family in one split (needs the NCBI "
                                 "lineage cache lineages.json next to the manifest; missing ids are fetched), "
                                 "genome only keeps species apart")
+    prepare_parser.add_argument("--fixed-splits", help="With --manifest --split-by family: split_assignments.tsv of an earlier "
+                                "dataset; its genomes keep their split, a family containing one goes there as a whole, "
+                                "and only new families are placed freely (for adding genomes without moving the test set)")
     prepare_parser.add_argument("--split-seed", type=int, default=42,
                                 help="With --manifest: random seed of the split (and of fragment sampling)")
     prepare_parser.add_argument("--output", "-o", required=True, help="Output directory")
