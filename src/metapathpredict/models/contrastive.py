@@ -689,6 +689,14 @@ class ContrastiveTrainer:
             f"    Throughput: {throughput:.0f} samples/s, {epoch_time:.1f}s total"
         )
 
+        self.last_train_stats = {
+            "pos_sim": avg_pos_sim,
+            "neg_sim": avg_neg_sim,
+            "sim_gap": avg_pos_sim - avg_neg_sim,
+            "grad_norm": avg_grad,
+            "embedding_std": avg_emb_std,
+            "samples_per_sec": throughput,
+        }
         return avg_loss
 
     def validate_epoch(self, dataloader: DataLoader, metric_samples: int = 4096) -> float:

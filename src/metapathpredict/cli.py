@@ -14,6 +14,8 @@ from typing import Any
 import numpy as np
 import torch
 
+from metapathpredict.experiment_tracking import MetricsSink, NullSink
+
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
@@ -206,9 +208,11 @@ def _train_supervised(args, settings, device, data_module, output_dir) -> int:
     return 0
 
 
-def _train_contrastive(settings, device, data_module, output_dir) -> int:
+def _train_contrastive(settings, device, data_module, output_dir, sink: MetricsSink | None = None) -> int:
     """Train contrastive learning encoder (SimCLR / SupCon)."""
     import time
+
+    sink = sink or NullSink()
 
     from metapathpredict.models import (
         ContrastiveAugmentation,
@@ -334,6 +338,25 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
             f"Time: {elapsed:.1f}s{improved}"
         )
 
+        ts = trainer.last_train_stats
+        sink.log_metrics({
+            "contrastive/train_loss": loss,
+            "contrastive/val_loss": val_loss,
+            "contrastive/best_val_loss": best_val_loss,
+            "contrastive/val_alignment": m["alignment"],
+            "contrastive/val_uniformity": m["uniformity"],
+            "contrastive/val_erank_projection": m["erank_projection"],
+            "contrastive/val_erank_backbone": m["erank_backbone"],
+            "contrastive/pos_sim": ts["pos_sim"],
+            "contrastive/neg_sim": ts["neg_sim"],
+            "contrastive/sim_gap": ts["sim_gap"],
+            "contrastive/grad_norm": ts["grad_norm"],
+            "contrastive/embedding_std": ts["embedding_std"],
+            "contrastive/samples_per_sec": ts["samples_per_sec"],
+            "contrastive/epoch_seconds": elapsed,
+            "contrastive/lr": optimizer.param_groups[0]["lr"],
+        }, step=epoch + 1)
+
         if early_stopper.step(val_loss):
             logger.info(
                 f"Early stopping: val loss hasn't improved for "
@@ -402,6 +425,12 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
             f"val_acc={val_acc:.4f}"
         )
 
+        sink.log_metrics({
+            "probe/train_loss": total_loss / num_batches,
+            "probe/train_acc": correct / total,
+            "probe/val_acc": val_acc,
+        }, step=probe_epoch + 1)
+
         # Keep the classifier weights from whichever epoch generalized best,
         # same reasoning as picking the encoder checkpoint by val loss above.
         if val_acc > best_probe_val_acc:
@@ -436,15 +465,22 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
     logger.info(f"Contrastive training complete in {total_time:.1f}s ({total_time/60:.1f}min)")
     logger.info(f"  Best val loss: {best_val_loss:.6f}")
     logger.info(f"  Best probe val accuracy: {best_probe_val_acc:.4f}")
+    sink.log_metrics({
+        "contrastive/best_val_loss_final": best_val_loss,
+        "contrastive/epochs_run": last_epoch + 1,
+        "probe/best_val_acc": best_probe_val_acc,
+    })
     logger.info(f"  Best checkpoint: {output_dir / 'contrastive_best.pt'}")
     logger.info(f"  Final checkpoint: {output_dir / 'contrastive_final.pt'}")
     return 0
 
 
 def _train_rl(settings, device, data_module, output_dir,
-              encoder_checkpoint=None) -> int:
+              encoder_checkpoint=None, sink: MetricsSink | None = None) -> int:
     """Train RL agent for sequence classification."""
     import time
+
+    sink = sink or NullSink()
 
     from metapathpredict.models import (
         ActorCriticAgent,
@@ -665,6 +701,15 @@ def _train_rl(settings, device, data_module, output_dir,
             f"Time: {elapsed:.1f}s{improved}"
         )
 
+        sink.log_metrics({
+            "rl/reward": metrics["avg_reward"],
+            "rl/train_acc": metrics["accuracy"],
+            "rl/val_acc": val_accuracy,
+            "rl/best_val_acc": best_val_accuracy,
+            "rl/loss": metrics["avg_loss"],
+            "rl/epoch_seconds": elapsed,
+        }, step=epoch + 1)
+
         if early_stopper.step(val_accuracy):
             logger.info(
                 f"Early stopping: val accuracy hasn't improved for "
@@ -685,12 +730,13 @@ def _train_rl(settings, device, data_module, output_dir,
     total_time = time.time() - t0_total
     logger.info(f"RL training complete in {total_time:.1f}s ({total_time/60:.1f}min)")
     logger.info(f"  Best val accuracy: {best_val_accuracy:.4f}")
+    sink.log_metrics({"rl/best_val_acc_final": best_val_accuracy, "rl/epochs_run": last_epoch + 1})
     logger.info(f"  Best checkpoint: {output_dir / 'rl_best.pt'}")
     logger.info(f"  Final checkpoint: {output_dir / 'rl_final.pt'}")
     return 0
 
 
-def _train_full_pipeline(args, settings, device, data_module, output_dir) -> int:
+def _train_full_pipeline(args, settings, device, data_module, output_dir, sink: MetricsSink | None = None) -> int:
     """Full pipeline: contrastive pretrain -> RL fine-tune."""
     import time
 
@@ -706,7 +752,7 @@ def _train_full_pipeline(args, settings, device, data_module, output_dir) -> int
     logger.info("=" * 60)
     logger.info("  Phase 1/2: Contrastive Pretraining")
     logger.info("=" * 60)
-    rc = _train_contrastive(settings, device, data_module, output_dir)
+    rc = _train_contrastive(settings, device, data_module, output_dir, sink=sink)
     if rc != 0:
         logger.error("Contrastive pretraining failed!")
         return rc
@@ -718,7 +764,7 @@ def _train_full_pipeline(args, settings, device, data_module, output_dir) -> int
     logger.info("  Phase 2/2: RL Fine-tuning (with contrastive encoder)")
     logger.info("=" * 60)
     rc = _train_rl(settings, device, data_module, output_dir,
-                   encoder_checkpoint=contrastive_ckpt)
+                   encoder_checkpoint=contrastive_ckpt, sink=sink)
     if rc != 0:
         logger.error("RL fine-tuning failed!")
         return rc
@@ -1418,26 +1464,10 @@ def prepare_command(args: argparse.Namespace) -> int:
     return 0
 
 
-def evaluate_command(args: argparse.Namespace) -> int:
-    """Evaluate contrastive/RL model on test data."""
-    from metapathpredict.config import Settings
+def _predict_split(checkpoint_path: Path, data_path: str, device, batch_size: int = 64):
+    """Run a checkpoint over an HDF5 split. Returns (model_type, class_names, targets, predictions)."""
     from metapathpredict.data import HDF5SequenceDataset
-
-    from sklearn.metrics import classification_report, confusion_matrix
     from torch.utils.data import DataLoader
-
-    if args.config:
-        settings = Settings.from_yaml(args.config)
-    else:
-        settings = Settings()
-
-    device = setup_device(args)
-
-    # Load model
-    checkpoint_path = Path(args.model)
-    if not checkpoint_path.exists():
-        logger.error(f"Model checkpoint not found: {checkpoint_path}")
-        return 1
 
     result = _load_model_from_checkpoint(checkpoint_path, device)
     if len(result) == 3:
@@ -1446,83 +1476,105 @@ def evaluate_command(args: argparse.Namespace) -> int:
         model, model_type = result
         algorithm = "actor_critic"
 
-    logger.info(f"Evaluating {model_type} model from {checkpoint_path}")
+    dataset = HDF5SequenceDataset(data_path)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=4)
+    class_names = list(getattr(model, "class_names", dataset.class_names))
 
-    # Load test data
-    test_dataset = HDF5SequenceDataset(args.data)
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=args.batch_size or 64,
-        shuffle=False,
-        num_workers=4,
-    )
-
-    class_names = list(getattr(model, "class_names", test_dataset.class_names))
-    all_preds = []
-    all_targets = []
-
-    for batch in test_loader:
+    preds, targets = [], []
+    for batch in loader:
         seqs, labels = batch[0].to(device), batch[1]
         for i in range(seqs.shape[0]):
-            x = seqs[i].unsqueeze(0)
-            class_idx, _, _ = _predict_single(model, model_type, x, algorithm)
-            all_preds.append(class_idx)
-            all_targets.append(labels[i].item())
+            class_idx, _, _ = _predict_single(model, model_type, seqs[i].unsqueeze(0), algorithm)
+            preds.append(class_idx)
+            targets.append(labels[i].item())
+    return model_type, class_names, np.array(targets), np.array(preds)
 
-    all_preds = np.array(all_preds)
-    all_targets = np.array(all_targets)
-    accuracy = (all_preds == all_targets).mean()
+
+def _evaluation_report(class_names: list[str], targets: np.ndarray, preds: np.ndarray) -> dict:
+    """Accuracy, confusion matrix and per-class report, plus the prokaryote/eukaryote/virus roll-up."""
+    from sklearn.metrics import classification_report, confusion_matrix
+
+    from metapathpredict.config.settings import SUPERCLASSES, superclass_index_map
+
+    label_ids = list(range(len(class_names)))
+    kwargs = dict(labels=label_ids, target_names=class_names, zero_division=0)
+    report = {
+        "accuracy": float((preds == targets).mean()),
+        "confusion_matrix": confusion_matrix(targets, preds, labels=label_ids).tolist(),
+        "classification_report": classification_report(targets, preds, output_dict=True, **kwargs),
+        "aggregated_3class": None,
+    }
+    super_map = superclass_index_map(class_names)
+    if super_map is not None and len(class_names) != len(SUPERCLASSES):
+        to_super = np.array(super_map)
+        s_targets, s_preds = to_super[targets], to_super[preds]
+        s_kwargs = dict(labels=list(range(len(SUPERCLASSES))), target_names=SUPERCLASSES, zero_division=0)
+        report["aggregated_3class"] = {
+            "accuracy": float((s_targets == s_preds).mean()),
+            "classification_report": classification_report(s_targets, s_preds, output_dict=True, **s_kwargs),
+        }
+    return report
+
+
+def _report_to_metrics(report: dict, prefix: str) -> dict[str, float]:
+    """Flatten an evaluation report into scalar metrics for tracking."""
+    metrics = {f"{prefix}/accuracy": report["accuracy"]}
+    for name, row in report["classification_report"].items():
+        if isinstance(row, dict) and name not in ("macro avg", "weighted avg"):
+            metrics[f"{prefix}/recall_{name}"] = row["recall"]
+    metrics[f"{prefix}/macro_f1"] = report["classification_report"]["macro avg"]["f1-score"]
+    agg = report.get("aggregated_3class")
+    if agg:
+        metrics[f"{prefix}/accuracy_3class"] = agg["accuracy"]
+        for name, row in agg["classification_report"].items():
+            if isinstance(row, dict) and name not in ("macro avg", "weighted avg"):
+                metrics[f"{prefix}/recall_3class_{name}"] = row["recall"]
+    return metrics
+
+
+def evaluate_command(args: argparse.Namespace) -> int:
+    """Evaluate contrastive/RL model on test data."""
+    from sklearn.metrics import classification_report, confusion_matrix
+
+    device = setup_device(args)
+
+    checkpoint_path = Path(args.model)
+    if not checkpoint_path.exists():
+        logger.error(f"Model checkpoint not found: {checkpoint_path}")
+        return 1
+
+    logger.info(f"Evaluating model from {checkpoint_path}")
+    model_type, class_names, all_targets, all_preds = _predict_split(
+        checkpoint_path, args.data, device, batch_size=args.batch_size or 64
+    )
+    report = _evaluation_report(class_names, all_targets, all_preds)
 
     print("\n" + "=" * 60)
     print("EVALUATION RESULTS")
     print("=" * 60)
-
-    print(f"\nAccuracy: {accuracy:.4f}")
+    print(f"\nAccuracy: {report['accuracy']:.4f}")
 
     label_ids = list(range(len(class_names)))
-    report_kwargs = dict(labels=label_ids, target_names=class_names, zero_division=0)
-
     print("\nClassification Report:")
-    print(classification_report(all_targets, all_preds, **report_kwargs))
-
+    print(classification_report(all_targets, all_preds, labels=label_ids, target_names=class_names, zero_division=0))
     print("\nConfusion Matrix:")
-    cm = confusion_matrix(all_targets, all_preds, labels=label_ids)
-    print(cm)
+    print(np.array(report["confusion_matrix"]))
 
-    # Roll fine-grained classes up to prokaryote/eukaryote/virus — the level
-    # other tools (DeepMicroClass, Tiara) report at, so results are comparable.
-    from metapathpredict.config.settings import SUPERCLASSES, superclass_index_map
+    agg = report["aggregated_3class"]
+    if agg is not None:
+        from metapathpredict.config.settings import SUPERCLASSES, superclass_index_map
 
-    super_results = None
-    super_map = superclass_index_map(class_names)
-    if super_map is not None and len(class_names) != len(SUPERCLASSES):
-        to_super = np.array(super_map)
-        super_targets, super_preds = to_super[all_targets], to_super[all_preds]
-        super_ids = list(range(len(SUPERCLASSES)))
-        super_kwargs = dict(labels=super_ids, target_names=SUPERCLASSES, zero_division=0)
-        print(f"\nAggregated to {SUPERCLASSES}: accuracy {(super_targets == super_preds).mean():.4f}")
-        print(classification_report(super_targets, super_preds, **super_kwargs))
-        print(confusion_matrix(super_targets, super_preds, labels=super_ids))
-        super_results = {
-            "accuracy": float((super_targets == super_preds).mean()),
-            "classification_report": classification_report(
-                super_targets, super_preds, output_dict=True, **super_kwargs
-            ),
-        }
+        to_super = np.array(superclass_index_map(class_names))
+        s_targets, s_preds = to_super[all_targets], to_super[all_preds]
+        s_ids = list(range(len(SUPERCLASSES)))
+        print(f"\nAggregated to {SUPERCLASSES}: accuracy {agg['accuracy']:.4f}")
+        print(classification_report(s_targets, s_preds, labels=s_ids, target_names=SUPERCLASSES, zero_division=0))
+        print(confusion_matrix(s_targets, s_preds, labels=s_ids))
 
     if args.output:
-        output_path = Path(args.output)
-        eval_results = {
-            "accuracy": float(accuracy),
-            "confusion_matrix": cm.tolist(),
-            "classification_report": classification_report(
-                all_targets, all_preds, output_dict=True, **report_kwargs
-            ),
-            "aggregated_3class": super_results,
-        }
-        with open(output_path, "w") as f:
-            json.dump(eval_results, f, indent=2)
-        logger.info(f"Results saved to {output_path}")
+        with open(Path(args.output), "w") as f:
+            json.dump(report, f, indent=2)
+        logger.info(f"Results saved to {args.output}")
 
     return 0
 

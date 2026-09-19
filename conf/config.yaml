@@ -9,6 +9,13 @@ experiment_name: baseline
 pipeline: contrastive   # contrastive = encoder + linear probe; full = also RL fine-tuning
 max_threads: 16
 
+# MLflow: parameters, per-epoch metrics, CPU/GPU/memory metrics and test-split scores per run.
+# uri null = sqlite:///<repo>/mlflow.db ; view with `mlflow ui --backend-store-uri sqlite:///mlflow.db`
+tracking:
+  enabled: true
+  uri: null
+  system_metrics: true
+
 data:
   default_fragment_size: 500
   num_workers: 8

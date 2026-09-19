@@ -231,6 +231,22 @@ metapathpredict/
 └── pyproject.toml
 ```
 
+## Experiment tracking
+
+Experiments run through Hydra (`scripts/run_experiment.py`) are tracked twice: each run gets its own
+directory under `experiments/` (resolved config, log, test scores) and one MLflow run with the same
+parameters, per-epoch metrics (losses, alignment, uniformity, effective rank, probe/RL accuracy),
+CPU/GPU/memory metrics and the test-split scores per class.
+
+```bash
+python scripts/run_experiment.py experiment_name=bs512 contrastive.batch_size=512
+python scripts/run_experiment.py -m experiment_name=lr contrastive.learning_rate=1e-4,3e-4   # a sweep
+mlflow ui --backend-store-uri sqlite:///mlflow.db                # http://localhost:5000
+python scripts/import_runs_to_mlflow.py                           # add finished runs from their logs
+```
+
+Use `tracking.enabled=false` to skip MLflow. Plain `metapathpredict train` does not log to MLflow.
+
 ## Testing
 
 ```bash
