@@ -5,6 +5,7 @@ import pytest
 
 from metapathpredict.genome_eval import (
     evaluate_by_genome,
+    paired_difference,
     format_genome_report,
     genome_report,
     genome_report_to_metrics,
@@ -107,3 +108,39 @@ def test_evaluate_by_genome_skips_a_missing_or_misaligned_fasta(tmp_path):
     assert evaluate_by_genome(tmp_path, t, p, CLASSES) is None  # 1 fragment in the file, 3 predictions
     (tmp_path / "test_fragments.fasta").write_text("".join(f">x|label=0|acc=a\nAC\n" for _ in range(3)))
     assert evaluate_by_genome(tmp_path, t, p, CLASSES, n_boot=20)["accuracy"]["value"] == 1.0
+
+
+def _paired(per_genome_a, per_genome_b):
+    t, pa, g = _split(per_genome_a)
+    _, pb, _ = _split(per_genome_b)
+    return t, pa, pb, g
+
+
+def test_paired_difference_is_narrower_than_two_independent_intervals():
+    # genomes differ a lot in difficulty (30%..90%) but B is uniformly 5 points better than A
+    a = [(f"g{i}", 0, 100, 30 + 3 * i) for i in range(20)]
+    b = [(acc, c, n, k + 5) for acc, c, n, k in a]
+    t, pa, pb, g = _paired(a, b)
+    diff = paired_difference(t, pa, pb, g, CLASSES, n_boot=500)
+    assert diff["accuracy"]["value"] == pytest.approx(0.05)
+    assert diff["accuracy"]["ci_low"] == pytest.approx(0.05) and diff["accuracy"]["ci_high"] == pytest.approx(0.05)
+    assert diff["p_b_better"] == 1.0
+    independent = genome_report(t, pa, g, CLASSES, n_boot=500)["accuracy"]
+    assert independent["ci_high"] - independent["ci_low"] > 0.1  # the unpaired view would call 5 points noise
+
+
+def test_paired_difference_of_identical_models_is_zero_and_sign_follows_the_better_model():
+    a = [(f"g{i}", 0, 20, 10) for i in range(10)]
+    t, pa, pb, g = _paired(a, a)
+    same = paired_difference(t, pa, pb, g, CLASSES, n_boot=100)
+    assert same["accuracy"] == {"value": 0.0, "ci_low": 0.0, "ci_high": 0.0} and same["p_b_better"] == 0.0
+    t, pa, pb, g = _paired(a, [(acc, c, n, 5) for acc, c, n, _ in a])
+    worse = paired_difference(t, pa, pb, g, CLASSES, n_boot=100)
+    assert worse["accuracy"]["value"] == pytest.approx(-0.25) and worse["p_b_better"] == 0.0
+
+
+def test_paired_difference_is_uncertain_when_only_two_genomes_disagree():
+    t, pa, pb, g = _paired([("x", 0, 50, 50), ("y", 0, 50, 0)], [("x", 0, 50, 0), ("y", 0, 50, 50)])
+    diff = paired_difference(t, pa, pb, g, CLASSES, n_boot=2000)
+    assert diff["accuracy"]["value"] == 0.0
+    assert diff["accuracy"]["ci_low"] < 0 < diff["accuracy"]["ci_high"]

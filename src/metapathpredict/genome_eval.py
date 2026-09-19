@@ -130,6 +130,62 @@ def genome_report(
     return report
 
 
+def paired_difference(
+    targets: np.ndarray,
+    preds_a: np.ndarray,
+    preds_b: np.ndarray,
+    genomes: np.ndarray,
+    class_names: list[str],
+    n_boot: int = 2000,
+    seed: int = 0,
+    level: float = 0.95,
+) -> dict:
+    """
+    How much better is model B than model A, with a bootstrap interval over genomes.
+
+    Both models are scored on the same resampled genomes, so a genome that is hard for both cancels
+    out. The interval of the difference is therefore much narrower than what two separate
+    genome_report intervals suggest. Returns intervals (of B minus A) for "accuracy",
+    "balanced_accuracy" and, when the classes roll up, "accuracy_3class", plus
+    "p_b_better" (share of resamples in which B beats A on accuracy).
+    """
+    super_map = superclass_index_map(class_names)
+    to_super = np.array(super_map) if super_map is not None and len(super_map) != len(set(super_map)) else None
+    targets, genomes = np.asarray(targets), np.asarray(genomes)
+    a = genome_table(targets, np.asarray(preds_a), genomes, to_super)
+    b = genome_table(targets, np.asarray(preds_b), genomes, to_super)
+    rng = np.random.default_rng(seed)
+
+    per_class = []
+    for c in range(len(class_names)):
+        rows = np.flatnonzero(a["label"] == c)
+        if len(rows) == 0:
+            continue
+        picks = rng.integers(0, len(rows), size=(n_boot, len(rows)))
+        entry = {"n": a["fragments"][rows][picks].sum(axis=1), "n0": a["fragments"][rows].sum(),
+                 "d": (b["correct"] - a["correct"])[rows][picks].sum(axis=1),
+                 "d0": (b["correct"] - a["correct"])[rows].sum()}
+        if to_super is not None:
+            diff3 = b["correct_3class"] - a["correct_3class"]
+            entry["d3"], entry["d30"] = diff3[rows][picks].sum(axis=1), diff3[rows].sum()
+        per_class.append(entry)
+
+    total_n, total_n0 = sum(e["n"] for e in per_class), sum(e["n0"] for e in per_class)
+    accuracy_samples = sum(e["d"] for e in per_class) / total_n
+    report = {
+        "accuracy": _interval(accuracy_samples, sum(e["d0"] for e in per_class) / total_n0, level),
+        "balanced_accuracy": _interval(
+            np.mean([e["d"] / e["n"] for e in per_class], axis=0),
+            np.mean([e["d0"] / e["n0"] for e in per_class]), level),
+        "p_b_better": float((accuracy_samples > 0).mean()),
+        "n_boot": n_boot, "level": level,
+    }
+    if to_super is not None:
+        report["accuracy_3class"] = _interval(
+            sum(e["d3"] for e in per_class) / total_n, sum(e["d30"] for e in per_class) / total_n0, level)
+    return report
+
+
 def evaluate_by_genome(dataset_dir: str | Path, targets: np.ndarray, preds: np.ndarray, class_names: list[str],
                        **kwargs) -> dict | None:
     """genome_report for the test split of `dataset_dir`, or None if its FASTA is missing/misaligned."""

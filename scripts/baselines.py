@@ -42,6 +42,7 @@ def _finish(sink: MLflowSink, out_dir: Path, data_dir: Path, class_names: list[s
     report = _evaluation_report(class_names, targets, preds)
     out_dir.mkdir(parents=True, exist_ok=True)
     (out_dir / "test.json").write_text(json.dumps(report, indent=2))
+    np.save(out_dir / "test_predictions.npy", np.asarray(preds, dtype=np.int8))
     sink.log_metrics(_report_to_metrics(report, "test/baseline"))
     genome = evaluate_by_genome(data_dir, targets, preds, class_names)
     if genome:

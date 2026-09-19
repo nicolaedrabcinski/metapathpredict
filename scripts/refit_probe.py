@@ -15,6 +15,7 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
@@ -66,6 +67,7 @@ def main() -> None:
         checkpoint["probe_mode"] = "frozen"
         torch.save(checkpoint, path.parent / "contrastive_frozen_probe.pt")
         (path.parent.parent / "test_frozen_probe.json").write_text(json.dumps(report, indent=2))
+        np.save(path.parent.parent / "test_frozen_probe_predictions.npy", preds.astype(np.int8))
         if genome:
             (path.parent.parent / "test_frozen_probe_genomes.json").write_text(json.dumps(genome, indent=2))
 
