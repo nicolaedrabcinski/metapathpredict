@@ -378,70 +378,81 @@ def _train_contrastive(settings, device, data_module, output_dir, sink: MetricsS
     # weights and report a confident-looking but meaningless class. Fit it as a
     # linear probe on the frozen backbone so contrastive-only checkpoints produce
     # real predictions instead.
-    logger.info("Fitting linear-probe classifier head on frozen embeddings...")
-    import copy
+    if cfg.probe_mode == "frozen":
+        from metapathpredict.probe import fit_linear_probe
 
-    import torch.nn.functional as F
-
-    for p in encoder.encoder.parameters():
-        p.requires_grad = False
-    for p in encoder.encoder.classifier.parameters():
-        p.requires_grad = True
-
-    probe_optimizer = torch.optim.Adam(encoder.encoder.classifier.parameters(), lr=1e-3)
-    probe_epochs = cfg.probe_epochs
-    best_probe_val_acc = -1.0
-    best_probe_state = None
-    encoder.train()
-    for probe_epoch in range(probe_epochs):
-        total_loss, correct, total = 0.0, 0, 0
-        for batch in train_loader:
-            x, labels = batch[0].to(device), batch[1].to(device)
-            logits = encoder.encoder(x)
-            probe_loss = F.cross_entropy(logits, labels)
-
-            probe_optimizer.zero_grad()
-            probe_loss.backward()
-            probe_optimizer.step()
-
-            total_loss += probe_loss.item()
-            correct += (logits.argmax(dim=1) == labels).sum().item()
-            total += labels.size(0)
-
+        logger.info("Fitting linear-probe classifier head on frozen, eval-mode embeddings...")
+        probe = fit_linear_probe(
+            encoder.encoder, train_loader, val_loader, device,
+            epochs=cfg.probe_epochs, sink=sink,
+        )
+        best_probe_val_acc = probe["best_val_acc"]
         encoder.eval()
-        val_correct, val_total = 0, 0
-        with torch.no_grad():
-            for batch in val_loader:
+    else:
+        logger.info("Fitting linear-probe classifier head on frozen embeddings...")
+        import copy
+
+        import torch.nn.functional as F
+
+        for p in encoder.encoder.parameters():
+            p.requires_grad = False
+        for p in encoder.encoder.classifier.parameters():
+            p.requires_grad = True
+
+        probe_optimizer = torch.optim.Adam(encoder.encoder.classifier.parameters(), lr=1e-3)
+        probe_epochs = cfg.probe_epochs
+        best_probe_val_acc = -1.0
+        best_probe_state = None
+        encoder.train()
+        for probe_epoch in range(probe_epochs):
+            total_loss, correct, total = 0.0, 0, 0
+            for batch in train_loader:
                 x, labels = batch[0].to(device), batch[1].to(device)
                 logits = encoder.encoder(x)
-                val_correct += (logits.argmax(dim=1) == labels).sum().item()
-                val_total += labels.size(0)
-        val_acc = val_correct / val_total
-        encoder.train()
+                probe_loss = F.cross_entropy(logits, labels)
 
-        logger.info(
-            f"  Linear probe epoch {probe_epoch + 1}/{probe_epochs}: "
-            f"train_loss={total_loss / num_batches:.4f}, train_acc={correct / total:.4f}, "
-            f"val_acc={val_acc:.4f}"
-        )
+                probe_optimizer.zero_grad()
+                probe_loss.backward()
+                probe_optimizer.step()
 
-        sink.log_metrics({
-            "probe/train_loss": total_loss / num_batches,
-            "probe/train_acc": correct / total,
-            "probe/val_acc": val_acc,
-        }, step=probe_epoch + 1)
+                total_loss += probe_loss.item()
+                correct += (logits.argmax(dim=1) == labels).sum().item()
+                total += labels.size(0)
 
-        # Keep the classifier weights from whichever epoch generalized best,
-        # same reasoning as picking the encoder checkpoint by val loss above.
-        if val_acc > best_probe_val_acc:
-            best_probe_val_acc = val_acc
-            best_probe_state = copy.deepcopy(encoder.encoder.classifier.state_dict())
+            encoder.eval()
+            val_correct, val_total = 0, 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    x, labels = batch[0].to(device), batch[1].to(device)
+                    logits = encoder.encoder(x)
+                    val_correct += (logits.argmax(dim=1) == labels).sum().item()
+                    val_total += labels.size(0)
+            val_acc = val_correct / val_total
+            encoder.train()
 
-    for p in encoder.encoder.parameters():
-        p.requires_grad = True
-    if best_probe_state is not None:
-        encoder.encoder.classifier.load_state_dict(best_probe_state)
-    encoder.eval()
+            logger.info(
+                f"  Linear probe epoch {probe_epoch + 1}/{probe_epochs}: "
+                f"train_loss={total_loss / num_batches:.4f}, train_acc={correct / total:.4f}, "
+                f"val_acc={val_acc:.4f}"
+            )
+
+            sink.log_metrics({
+                "probe/train_loss": total_loss / num_batches,
+                "probe/train_acc": correct / total,
+                "probe/val_acc": val_acc,
+            }, step=probe_epoch + 1)
+
+            # Keep the classifier weights from whichever epoch generalized best,
+            # same reasoning as picking the encoder checkpoint by val loss above.
+            if val_acc > best_probe_val_acc:
+                best_probe_val_acc = val_acc
+                best_probe_state = copy.deepcopy(encoder.encoder.classifier.state_dict())
+
+        for p in encoder.encoder.parameters():
+            p.requires_grad = True
+        if best_probe_state is not None:
+            encoder.encoder.classifier.load_state_dict(best_probe_state)
+        encoder.eval()
 
     # Re-save both checkpoints with the now-trained classifier head.
     torch.save({

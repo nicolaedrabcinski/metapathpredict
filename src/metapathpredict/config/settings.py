@@ -352,6 +352,14 @@ class ContrastiveConfig(BaseModel):
         default=0.0, ge=0.0,
         description="NT-Xent hard-negative concentration (Robinson et al.); 0 disables.",
     )
+    probe_mode: Literal["legacy", "frozen"] = Field(
+        default="legacy",
+        description=(
+            "legacy: head fit with the backbone in train mode (BatchNorm batch statistics). "
+            "frozen: backbone in eval mode with recalibrated BatchNorm statistics, head fit on cached "
+            "embeddings (metapathpredict.probe)."
+        ),
+    )
     probe_epochs: int = Field(
         default=3, ge=1,
         description="Epochs for the linear-probe classifier head fit after contrastive pretraining.",
