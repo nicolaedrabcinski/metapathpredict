@@ -340,6 +340,10 @@ class ContrastiveConfig(BaseModel):
         default=3, ge=0,
         description="Stop if val loss doesn't improve for this many epochs. 0 disables it.",
     )
+    probe_epochs: int = Field(
+        default=3, ge=1,
+        description="Epochs for the linear-probe classifier head fit after contrastive pretraining.",
+    )
 
 
 class RLConfig(BaseModel):

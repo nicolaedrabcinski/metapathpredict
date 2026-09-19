@@ -23,7 +23,8 @@ contrastive:
   learning_rate: 0.0001
   weight_decay: 0.0001
   batch_size: 2048
-  early_stopping_patience: 3
+  early_stopping_patience: 7
+  probe_epochs: 15
 
 scheduler:
   name: cosine
@@ -38,11 +39,11 @@ rl:
   reward_incorrect: -0.5
   reward_uncertain: -0.1
   num_epochs: 50
-  episodes_per_epoch: 16000
+  episodes_per_epoch: 64000
   learning_rate: 0.0001
   weight_decay: 0.0001
   gamma: 0.99
-  early_stopping_patience: 3
+  early_stopping_patience: 7
   epsilon_start: 1.0
   epsilon_end: 0.05
   epsilon_decay_epochs: 5

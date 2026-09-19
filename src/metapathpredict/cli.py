@@ -345,7 +345,7 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
         p.requires_grad = True
 
     probe_optimizer = torch.optim.Adam(encoder.encoder.classifier.parameters(), lr=1e-3)
-    probe_epochs = 3
+    probe_epochs = cfg.probe_epochs
     best_probe_val_acc = -1.0
     best_probe_state = None
     encoder.train()
