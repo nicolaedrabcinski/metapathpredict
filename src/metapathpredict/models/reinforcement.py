@@ -210,6 +210,7 @@ class DQNAgent(BaseModel):
         backbone: str = "medium",
         hidden_dim: int = 256,
         base_channels: int = 64,
+        norm: str = "batch",
     ):
         """
         Initialize DQN agent.
@@ -229,6 +230,7 @@ class DQNAgent(BaseModel):
             num_classes=num_actions,
             kernel_preset=backbone,
             base_channels=base_channels,
+            norm=norm,
         )
         
         embed_dim = self.encoder._final_channels
@@ -302,6 +304,7 @@ class PolicyGradientAgent(BaseModel):
         backbone: str = "medium",
         hidden_dim: int = 256,
         base_channels: int = 64,
+        norm: str = "batch",
     ):
         """
         Initialize policy gradient agent.
@@ -320,6 +323,7 @@ class PolicyGradientAgent(BaseModel):
             num_classes=num_actions,
             kernel_preset=backbone,
             base_channels=base_channels,
+            norm=norm,
         )
         
         embed_dim = self.encoder._final_channels
@@ -389,6 +393,7 @@ class ActorCriticAgent(BaseModel):
         backbone: str = "medium",
         hidden_dim: int = 256,
         base_channels: int = 64,
+        norm: str = "batch",
     ):
         """Initialize actor-critic agent."""
         super().__init__()
@@ -399,6 +404,7 @@ class ActorCriticAgent(BaseModel):
             num_classes=num_actions,
             kernel_preset=backbone,
             base_channels=base_channels,
+            norm=norm,
         )
         
         embed_dim = self.encoder._final_channels

@@ -246,6 +246,7 @@ def _train_contrastive(settings, device, data_module, output_dir, sink: MetricsS
         hidden_dim=cfg.hidden_dim,
         base_channels=cfg.base_channels,
         num_classes=settings.model.num_classes,
+        norm=cfg.norm,
     )
     encoder.to(device)
 
@@ -565,6 +566,7 @@ def _train_rl(settings, device, data_module, output_dir,
         backbone=cfg.backbone,
         hidden_dim=cfg.hidden_dim,
         base_channels=settings.contrastive.base_channels,
+        norm=settings.contrastive.norm,
     )
     agent.to(device)
 
@@ -690,6 +692,7 @@ def _train_rl(settings, device, data_module, output_dir,
                 "config": cfg.model_dump(),
                 "algorithm": cfg.algorithm,
                 "base_channels": settings.contrastive.base_channels,
+                "norm": settings.contrastive.norm,
                 "num_classes": settings.model.num_classes,
                 "class_names": settings.data.class_names,
             }, output_dir / "rl_best.pt")
@@ -735,6 +738,7 @@ def _train_rl(settings, device, data_module, output_dir,
         "config": cfg.model_dump(),
         "algorithm": cfg.algorithm,
         "base_channels": settings.contrastive.base_channels,
+        "norm": settings.contrastive.norm,
         "num_classes": settings.model.num_classes,
         "class_names": settings.data.class_names,
     }, output_dir / "rl_final.pt")
@@ -856,6 +860,7 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
             hidden_dim=config.get("hidden_dim", 256),
             base_channels=config.get("base_channels", 64),
             num_classes=ckpt.get("num_classes", 3),
+            norm=config.get("norm", "batch"),
         )
         model.load_state_dict(ckpt["encoder_state_dict"], strict=False)
         model.class_names = ckpt.get("class_names", ["bacteria", "eukaryotic", "virus"])
@@ -877,6 +882,7 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
             backbone=config.get("backbone", "medium"),
             hidden_dim=config.get("hidden_dim", 256),
             base_channels=ckpt.get("base_channels", 64),
+            norm=ckpt.get("norm", "batch"),
         )
         model.load_state_dict(ckpt["agent_state_dict"], strict=False)
         model.class_names = ckpt.get("class_names", ["bacteria", "eukaryotic", "virus"])

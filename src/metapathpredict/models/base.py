@@ -48,7 +48,7 @@ class BaseModel(nn.Module, ABC):
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             
-            elif isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm)):
+            elif isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.LayerNorm, nn.GroupNorm)):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
         
@@ -100,6 +100,14 @@ class BaseModel(nn.Module, ABC):
         return f"{base_repr}\n\nTotal parameters: {self.num_parameters:,}\nTrainable: {self.num_trainable_parameters:,}"
 
 
+def group_count(channels: int, target: int = 32) -> int:
+    """Largest number of groups <= target that divides `channels`."""
+    groups = min(target, channels)
+    while channels % groups:
+        groups -= 1
+    return groups
+
+
 class ConvBlock(nn.Module):
     """
     Convolutional block with optional batch norm, activation, and pooling.
@@ -116,6 +124,7 @@ class ConvBlock(nn.Module):
         groups: int = 1,
         use_batch_norm: bool = True,
         use_layer_norm: bool = False,
+        use_group_norm: bool = False,
         activation: nn.Module | None = None,
         dropout: float = 0.0,
         pool_size: int | None = None,
@@ -134,12 +143,14 @@ class ConvBlock(nn.Module):
             padding=padding,
             dilation=dilation,
             groups=groups,
-            bias=not use_batch_norm,  # No bias if using batch norm
+            bias=not (use_batch_norm or use_group_norm),  # normalisation layer supplies the shift
         )
         
         self.norm = None
         if use_batch_norm:
             self.norm = nn.BatchNorm1d(out_channels)
+        elif use_group_norm:
+            self.norm = nn.GroupNorm(group_count(out_channels), out_channels)
         elif use_layer_norm:
             self.norm = nn.LayerNorm(out_channels)
         

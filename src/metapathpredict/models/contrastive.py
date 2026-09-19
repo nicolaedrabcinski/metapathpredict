@@ -35,6 +35,7 @@ class ProjectionHead(nn.Module):
         in_dim: int,
         hidden_dim: int = 256,
         out_dim: int = 128,
+        norm: str = "batch",
     ):
         """
         Initialize projection head.
@@ -43,15 +44,19 @@ class ProjectionHead(nn.Module):
             in_dim: Input dimension.
             hidden_dim: Hidden layer dimension.
             out_dim: Output dimension.
+            norm: "batch" (BatchNorm1d) or "group" (LayerNorm, per-sample statistics).
         """
         super().__init__()
 
+        def make_norm() -> nn.Module:
+            return nn.BatchNorm1d(hidden_dim) if norm == "batch" else nn.LayerNorm(hidden_dim)
+
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
+            make_norm(),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, hidden_dim),
-            nn.BatchNorm1d(hidden_dim),
+            make_norm(),
             nn.ReLU(inplace=True),
             nn.Linear(hidden_dim, out_dim),
         )
@@ -83,6 +88,7 @@ class ContrastiveEncoder(BaseModel):
         hidden_dim: int = 256,
         base_channels: int = 64,
         num_classes: int = 3,
+        norm: str = "batch",
     ):
         """
         Initialize contrastive encoder.
@@ -95,6 +101,7 @@ class ContrastiveEncoder(BaseModel):
             base_channels: Base channels for backbone.
             num_classes: Outputs of the backbone's classifier head (fit as a linear
                 probe after pretraining; the contrastive loss itself never uses it).
+            norm: "batch" or "group" normalisation in the backbone and projection head.
         """
         super().__init__()
         self.num_classes = num_classes
@@ -111,6 +118,7 @@ class ContrastiveEncoder(BaseModel):
             num_classes=num_classes,
             kernel_preset=backbone,
             base_channels=base_channels,
+            norm=norm,
         )
 
         # Get embedding dimension
@@ -122,6 +130,7 @@ class ContrastiveEncoder(BaseModel):
             in_dim=embed_dim,
             hidden_dim=hidden_dim,
             out_dim=projection_dim,
+            norm=norm,
         )
 
         self.embed_dim = embed_dim

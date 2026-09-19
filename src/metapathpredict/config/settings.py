@@ -321,6 +321,11 @@ class ContrastiveConfig(BaseModel):
     projection_dim: int = Field(default=128, ge=32)
     hidden_dim: int = Field(default=256, ge=64)
 
+    norm: Literal["batch", "group"] = Field(
+        default="batch",
+        description="batch = BatchNorm; group = GroupNorm in the backbone and LayerNorm in the projection head.",
+    )
+
     # Loss
     loss_type: Literal["ntxent", "dcl", "supcon"] = Field(
         default="supcon",

@@ -34,6 +34,9 @@ def recalibrate_batchnorm(backbone: nn.Module, loader, device, max_batches: int 
     Returns the number of batches used. The module is left in eval mode.
     """
     norms = [m for m in backbone.modules() if isinstance(m, nn.modules.batchnorm._BatchNorm)]
+    if not norms:
+        backbone.eval()
+        return 0
     for m in norms:
         m.reset_running_stats()
         m.momentum = None  # cumulative moving average over the batches below

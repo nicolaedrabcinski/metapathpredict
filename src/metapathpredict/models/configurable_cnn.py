@@ -12,7 +12,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .base import BaseModel, ConvBlock, SEBlock
+from .base import BaseModel, ConvBlock, SEBlock, group_count
 
 
 class ConfigurableCNN(BaseModel):
@@ -44,6 +44,7 @@ class ConfigurableCNN(BaseModel):
         num_blocks: int = 3,
         use_se: bool = True,
         dropout: float = 0.3,
+        norm: Literal["batch", "group"] = "batch",
     ):
         """
         Initialize configurable CNN.
@@ -57,8 +58,12 @@ class ConfigurableCNN(BaseModel):
             num_blocks: Number of conv blocks.
             use_se: Whether to use SE attention.
             dropout: Dropout rate.
+            norm: "batch" (BatchNorm) or "group" (GroupNorm, statistics never mix samples).
         """
         super().__init__()
+        if norm not in ("batch", "group"):
+            raise ValueError(f"norm must be 'batch' or 'group', got {norm!r}")
+        self.norm_type = norm
         
         # Determine kernel sizes
         if custom_kernels is not None:
@@ -99,6 +104,7 @@ class ConfigurableCNN(BaseModel):
                     padding=kernel_size // 2,
                     pool_size=2,
                     dropout=dropout if i > 0 else 0.0,
+                    **self._norm_flags(),
                 )
             )
             
@@ -120,6 +126,9 @@ class ConfigurableCNN(BaseModel):
         
         self._final_channels = current_channels
     
+    def _norm_flags(self) -> dict[str, bool]:
+        return {"use_batch_norm": self.norm_type == "batch", "use_group_norm": self.norm_type == "group"}
+
     def _build_multiscale(
         self,
         in_channels: int,
@@ -140,6 +149,7 @@ class ConfigurableCNN(BaseModel):
                     padding=kernel_size // 2,
                     pool_size=2,
                     dropout=0.0,
+                    **self._norm_flags(),
                 ),
                 SEBlock(base_channels) if use_se else nn.Identity(),
                 ConvBlock(
@@ -149,6 +159,7 @@ class ConfigurableCNN(BaseModel):
                     padding=kernel_size // 2,
                     pool_size=2,
                     dropout=dropout,
+                    **self._norm_flags(),
                 ),
             )
             self.branches.append(branch)
@@ -158,7 +169,11 @@ class ConfigurableCNN(BaseModel):
         
         self.fusion = nn.Sequential(
             nn.Conv1d(combined_channels, base_channels * 4, kernel_size=1),
-            nn.BatchNorm1d(base_channels * 4),
+            (
+                nn.BatchNorm1d(base_channels * 4)
+                if self.norm_type == "batch"
+                else nn.GroupNorm(group_count(base_channels * 4), base_channels * 4)
+            ),
             nn.ReLU(inplace=True),
         )
         

@@ -1106,6 +1106,7 @@ def load_model_for_interpretation(
             projection_dim=config.get("projection_dim", 128),
             hidden_dim=config.get("hidden_dim", 256),
             base_channels=config.get("base_channels", 64),
+            norm=config.get("norm", "batch"),
             num_classes=checkpoint.get("num_classes", 3),
         )
         model.load_state_dict(checkpoint["encoder_state_dict"], strict=False)
@@ -1129,6 +1130,7 @@ def load_model_for_interpretation(
             backbone=config.get("backbone", "medium"),
             hidden_dim=config.get("hidden_dim", 256),
             base_channels=checkpoint.get("base_channels", 64),
+            norm=checkpoint.get("norm", "batch"),
         )
         model.load_state_dict(checkpoint["agent_state_dict"], strict=False)
         model = ClassificationView(

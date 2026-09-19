@@ -92,6 +92,7 @@ class PredictionService:
                     projection_dim=config.get("projection_dim", 128),
                     hidden_dim=config.get("hidden_dim", 256),
                     base_channels=config.get("base_channels", 64),
+                    norm=config.get("norm", "batch"),
                     num_classes=checkpoint.get("num_classes", 3),
                 )
                 self._contrastive_class_names = checkpoint.get("class_names", DEFAULT_CLASS_NAMES)
@@ -125,6 +126,7 @@ class PredictionService:
                     backbone=config.get("backbone", "medium"),
                     hidden_dim=config.get("hidden_dim", 256),
                     base_channels=checkpoint.get("base_channels", 64),
+                    norm=checkpoint.get("norm", "batch"),
                 )
                 self._rl_class_names = checkpoint.get("class_names", DEFAULT_CLASS_NAMES)
                 self._rl_agent.load_state_dict(

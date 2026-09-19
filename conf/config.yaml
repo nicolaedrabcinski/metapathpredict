@@ -32,6 +32,7 @@ contrastive:
   base_channels: 128
   projection_dim: 512
   hidden_dim: 1024
+  norm: batch
   loss_type: "ntxent"
   temperature: 0.07
   mutation_rate: 0.3
