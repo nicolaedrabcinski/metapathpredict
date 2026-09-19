@@ -19,6 +19,7 @@ import h5py
 import numpy as np
 
 from metapathpredict.genome_eval import TEST_FASTA, paired_difference, read_fragment_accessions
+from metapathpredict.relatedness import NEAR, relatedness_by_accession
 
 
 def main() -> None:
@@ -27,6 +28,8 @@ def main() -> None:
     ap.add_argument("b", nargs="+", help="predictions of one or more models B, each compared with A")
     ap.add_argument("--data-dir", default="data/datasets/taxa8")
     ap.add_argument("--n-boot", type=int, default=2000)
+    ap.add_argument("--only", choices=["near", "far"],
+                    help="restrict to test genomes with (near) or without (far) a genus/family relative in training")
     args = ap.parse_args()
 
     data_dir = Path(args.data_dir)
@@ -35,16 +38,24 @@ def main() -> None:
         targets = f["labels"][:]
     genomes = read_fragment_accessions(data_dir / TEST_FASTA)
     a = np.load(args.a).astype(int)
+    keep = np.ones(len(targets), dtype=bool)
+    if args.only:
+        relatedness = relatedness_by_accession(data_dir / "split_assignments.tsv")
+        if relatedness is None:
+            raise SystemExit("split_assignments.tsv has no lineage columns: run scripts/annotate_lineages.py")
+        is_near = np.array([relatedness.get(str(g), "none") in NEAR for g in genomes])
+        keep = is_near if args.only == "near" else ~is_near
+        print(f"only {args.only} genomes: {len(set(genomes[keep]))} genomes, {int(keep.sum())} fragments")
 
     def fmt(x: dict) -> str:
         return f"{x['value']:+.3f} [{x['ci_low']:+.3f}, {x['ci_high']:+.3f}]"
 
-    print(f"A = {args.a}  (accuracy {(a == targets).mean():.3f})")
+    print(f"A = {args.a}  (accuracy {(a[keep] == targets[keep]).mean():.3f})")
     print(f"{'B':70s} {'acc':>7s} {'diff accuracy (B-A)':>26s} {'diff 3-class':>26s} {'P(B>A)':>7s}")
     for path in args.b:
         b = np.load(path).astype(int)
-        diff = paired_difference(targets, a, b, genomes, class_names, n_boot=args.n_boot)
-        print(f"{path[-70:]:70s} {(b == targets).mean():7.3f} {fmt(diff['accuracy']):>26s} "
+        diff = paired_difference(targets[keep], a[keep], b[keep], genomes[keep], class_names, n_boot=args.n_boot)
+        print(f"{path[-70:]:70s} {(b[keep] == targets[keep]).mean():7.3f} {fmt(diff['accuracy']):>26s} "
               f"{fmt(diff['accuracy_3class']) if 'accuracy_3class' in diff else '-':>26s} {diff['p_b_better']:7.2f}")
 
 

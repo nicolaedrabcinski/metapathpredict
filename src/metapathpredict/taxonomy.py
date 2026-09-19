@@ -73,3 +73,14 @@ def fetch_lineages(taxids: Iterable[str | int], cache_path: str | Path, batch: i
 
 def lineage_of(lineages: dict, taxid: str | int) -> dict[str, str | None]:
     return lineages.get(str(taxid)) or {rank: None for rank in RANKS}
+
+
+# Columns in split_assignments.tsv. Prefixed because that file already has a `class` column (one of
+# the 8 taxonomic classes of the dataset) which the NCBI rank "class" must not overwrite.
+LINEAGE_COLUMNS = {rank: f"lineage_{rank}" for rank in RANKS}
+
+
+def lineage_columns(lineages: dict, taxid: str | int) -> dict[str, str]:
+    """{"lineage_phylum": ..., ...} for one genome; unknown ranks are empty strings."""
+    lineage = lineage_of(lineages, taxid)
+    return {LINEAGE_COLUMNS[rank]: lineage[rank] or "" for rank in RANKS}

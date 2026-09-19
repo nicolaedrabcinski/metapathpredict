@@ -1218,7 +1218,7 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
     split_by = getattr(args, "split_by", "genome")
     split_seed = getattr(args, "split_seed", 42)
     rng = np.random.RandomState(split_seed)
-    from metapathpredict.taxonomy import RANKS, fetch_lineages, lineage_of, load_lineages
+    from metapathpredict.taxonomy import fetch_lineages, lineage_columns, lineage_of, load_lineages
 
     lineage_cache = root / "lineages.json"
     if split_by == "family":
@@ -1288,7 +1288,7 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
                     "accession": genome["accession"], "class": name, "split": split,
                     "species_taxid": genome["species_taxid"], "organism": genome["organism"],
                     "fragments": taken,
-                    **lineage_of(lineages, genome["species_taxid"]),
+                    **lineage_columns(lineages, genome["species_taxid"]),
                     "group": group_key(genome),
                 })
                 done += 1

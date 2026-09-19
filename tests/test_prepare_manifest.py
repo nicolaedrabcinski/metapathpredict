@@ -245,10 +245,11 @@ class TestFamilySplit:
         assert prepare_command(args) == 0
         with open(tmp_path / "out" / "split_assignments.tsv") as f:
             assignments = list(csv.DictReader(f, delimiter="\t"))
-        assert {"phylum", "class", "order", "family", "genus", "group"} <= set(assignments[0])
+        assert {"lineage_phylum", "lineage_class", "lineage_order", "lineage_family", "lineage_genus", "group"} <= set(assignments[0])
+        assert {a["class"] for a in assignments} <= set(TAXON_CLASSES)  # the 8-class label must survive
         family_splits = {}
         for a in assignments:
-            family_splits.setdefault(a["family"], set()).add(a["split"])
+            family_splits.setdefault(a["lineage_family"], set()).add(a["split"])
         assert len(family_splits) == len(NCBI_GROUP_TO_TAXON) * 3 and all(len(v) == 1 for v in family_splits.values())
         assert {a["split"] for a in assignments} == {"train", "val", "test"}
         meta = json.loads((tmp_path / "out" / "metadata.json").read_text())

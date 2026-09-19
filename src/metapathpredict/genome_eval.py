@@ -19,6 +19,7 @@ from pathlib import Path
 import numpy as np
 
 from metapathpredict.config.settings import superclass_index_map
+from metapathpredict.relatedness import GROUPS, NEAR, relatedness_by_accession
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,12 @@ def genome_report(
     n_boot: int = 2000,
     seed: int = 0,
     level: float = 0.95,
+    relatedness: dict[str, str] | None = None,
 ) -> dict:
     """
     Accuracy with a bootstrap interval over genomes (resampled with replacement within each class,
-    so every class keeps its number of genomes).
+    so every class keeps its number of genomes). With `relatedness` (see metapathpredict.relatedness)
+    the report also gives accuracy by the closest relative in training and for near vs far genomes.
 
     Returns {"n_genomes": {class: int}, "accuracy", "balanced_accuracy", "accuracy_3class" (if the
     classes roll up), "recall": {class: interval}, "per_genome": [...]}. Each interval is
@@ -127,7 +130,27 @@ def genome_report(
         key=lambda row: (row["class"], row["accuracy"]),
     )
     report["n_boot"], report["level"] = n_boot, level
+    if relatedness:
+        report["by_relatedness"], report["near_far"] = _relatedness_breakdown(table, relatedness)
     return report
+
+
+def _relatedness_breakdown(table: dict, relatedness: dict[str, str]) -> tuple[dict, dict]:
+    """Accuracy per closest-shared-rank group and for near (genus/family) vs far genomes."""
+    def summarise(members: list[int]) -> dict:
+        fragments = float(table["fragments"][members].sum())
+        return {"genomes": len(members), "fragments": int(fragments),
+                "accuracy": float(table["correct"][members].sum() / fragments) if fragments else None}
+
+    groups = {name: [] for name in GROUPS}
+    for index, accession in enumerate(table["accession"]):
+        if str(accession) in relatedness:
+            groups[relatedness[str(accession)]].append(index)
+    by_group = {name: summarise(members) for name, members in groups.items() if members}
+    near = [i for name in NEAR for i in groups[name]]
+    far = [i for name in GROUPS if name not in NEAR for i in groups[name]]
+    near_far = {name: summarise(members) for name, members in (("near", near), ("far", far)) if members}
+    return by_group, near_far
 
 
 def paired_difference(
@@ -197,7 +220,8 @@ def evaluate_by_genome(dataset_dir: str | Path, targets: np.ndarray, preds: np.n
     if len(genomes) != len(targets):
         logger.warning(f"{fasta.name} has {len(genomes)} fragments but the test split has {len(targets)}: skipping")
         return None
-    return genome_report(targets, preds, genomes, class_names, **kwargs)
+    relatedness = relatedness_by_accession(Path(dataset_dir) / "split_assignments.tsv")
+    return genome_report(targets, preds, genomes, class_names, relatedness=relatedness, **kwargs)
 
 
 def format_genome_report(report: dict) -> str:
@@ -212,6 +236,13 @@ def format_genome_report(report: dict) -> str:
         lines.append(f"  accuracy (3-class) {fmt(report['accuracy_3class'])}")
     for name, interval in report["recall"].items():
         lines.append(f"  recall {name:13s}{fmt(interval)}   ({report['n_genomes'][name]} genomes)")
+    if "near_far" in report:
+        lines.append("  by closest relative among the training genomes of the class:")
+        for name, row in report["by_relatedness"].items():
+            lines.append(f"    {name:8s}{row['genomes']:4d} genomes   accuracy {row['accuracy']:.3f}")
+        for name, row in report["near_far"].items():
+            lines.append(f"    {name:8s}{row['genomes']:4d} genomes   accuracy {row['accuracy']:.3f}"
+                         f"   ({'genus or family in training' if name == 'near' else 'order or higher only'})")
     return "\n".join(lines)
 
 
@@ -226,4 +257,9 @@ def genome_report_to_metrics(report: dict, prefix: str) -> dict[str, float]:
     for name, interval in report["recall"].items():
         metrics[f"{prefix}/genome_recall_{name}_ci_low"] = interval["ci_low"]
         metrics[f"{prefix}/genome_recall_{name}_ci_high"] = interval["ci_high"]
+    for group, section in (("relatedness", report.get("by_relatedness", {})), ("relatedness", report.get("near_far", {}))):
+        for name, row in section.items():
+            if row["accuracy"] is not None:
+                metrics[f"{prefix}/{group}_{name}_accuracy"] = row["accuracy"]
+                metrics[f"{prefix}/{group}_{name}_genomes"] = float(row["genomes"])
     return metrics
