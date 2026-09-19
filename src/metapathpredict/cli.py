@@ -1606,6 +1606,14 @@ def evaluate_command(args: argparse.Namespace) -> int:
         print(classification_report(s_targets, s_preds, labels=s_ids, target_names=SUPERCLASSES, zero_division=0))
         print(confusion_matrix(s_targets, s_preds, labels=s_ids))
 
+    if "test" in Path(args.data).name:
+        from metapathpredict.genome_eval import evaluate_by_genome, format_genome_report
+
+        genome = evaluate_by_genome(Path(args.data).parent, all_targets, all_preds, class_names)
+        if genome:
+            print("\n" + format_genome_report(genome))
+            report["genome_level"] = genome
+
     if args.output:
         with open(Path(args.output), "w") as f:
             json.dump(report, f, indent=2)

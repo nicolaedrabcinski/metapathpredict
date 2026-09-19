@@ -37,6 +37,7 @@ from metapathpredict.cli import (
 from metapathpredict.config import Settings
 from metapathpredict.data import SequenceDataModule
 from metapathpredict.experiment_tracking import MLflowSink, NullSink, flatten_params
+from metapathpredict.genome_eval import evaluate_by_genome, format_genome_report, genome_report_to_metrics
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -117,6 +118,16 @@ def main(cfg: DictConfig) -> None:
                 f"Test {tag}: accuracy {report['accuracy']:.4f}"
                 + (f", 3-class {agg['accuracy']:.4f}" if agg else "")
             )
+            try:  # extra reporting must never cost the run its main test results
+                genome = evaluate_by_genome(settings.paths.datasets_dir, targets, preds, class_names)
+                if genome:
+                    genome_path = run_dir / f"test_{tag}_genomes.json"
+                    genome_path.write_text(json.dumps(genome, indent=2))
+                    artifacts.append(genome_path)
+                    sink.log_metrics(genome_report_to_metrics(genome, f"test/{tag}"))
+                    logger.info(format_genome_report(genome))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"Genome-level evaluation failed: {exc}")
         for path in artifacts:
             sink.log_artifact(path)
 
