@@ -223,3 +223,6 @@ terraform/.terraform/
 
 # Generated explanation figures (regenerate with scripts/explain.py)
 figures/
+
+# External tools: databases, sketches, per-genome tool output
+data/tools/
