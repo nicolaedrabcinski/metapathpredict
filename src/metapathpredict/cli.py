@@ -83,7 +83,7 @@ def train_command(args: argparse.Namespace) -> int:
 
     # Cap CPU thread usage (torch intra-op parallelism + DataLoader workers)
     # regardless of how many cores are available on the box.
-    max_threads = 4
+    max_threads = getattr(args, "max_threads", 16)
     torch.set_num_threads(max_threads)
     if settings.data.num_workers > max_threads:
         logger.info(f"Capping data.num_workers {settings.data.num_workers} -> {max_threads}")
@@ -469,6 +469,9 @@ def _train_rl(settings, device, data_module, output_dir,
         with h5py.File(train_dataset.hdf5_path, "r") as f:
             all_labels = f[train_dataset.labels_key][:]
         unique, label_counts = np.unique(all_labels, return_counts=True)
+        counts = dict(zip(unique.tolist(), label_counts.tolist()))
+    elif hasattr(train_dataset, "labels") and torch.is_tensor(train_dataset.labels):
+        unique, label_counts = np.unique(train_dataset.labels.numpy(), return_counts=True)
         counts = dict(zip(unique.tolist(), label_counts.tolist()))
     else:
         counts: dict[int, int] = {}
@@ -1532,6 +1535,8 @@ def main() -> int:
     train_parser.add_argument("--learning-rate", "-lr", type=float, help="Learning rate")
     train_parser.add_argument("--output", "-o", help="Output directory")
     train_parser.add_argument("--device", help="Device (cuda/cpu)")
+    train_parser.add_argument("--max-threads", type=int, default=16,
+                              help="Cap on torch CPU threads and DataLoader workers")
     train_parser.set_defaults(func=train_command)
     
     # Predict command

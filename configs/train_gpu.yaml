@@ -4,7 +4,7 @@
 # Data configuration
 data:
   default_fragment_size: 500
-  num_workers: 4
+  num_workers: 8
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15

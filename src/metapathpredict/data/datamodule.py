@@ -29,6 +29,25 @@ from metapathpredict.data.augmentation import SequenceAugmentation
 logger = logging.getLogger(__name__)
 
 
+# Splits whose float32 data fits under this are held in RAM. Reading one sample from the
+# HDF5 file decompresses its whole 1024-sample gzip chunk (~8MB for 500bp fragments), so
+# shuffled random access from disk was slow enough to leave the GPU idle. Larger datasets
+# still stream from disk.
+IN_MEMORY_LIMIT_BYTES = 6 * 1024**3
+
+
+def _open_split(path: Path) -> Dataset:
+    import h5py
+
+    with h5py.File(path, "r") as f:
+        nbytes = int(np.prod(f["sequences"].shape)) * 4
+    if nbytes <= IN_MEMORY_LIMIT_BYTES:
+        logger.info(f"Loading {path.name} into memory ({nbytes / 1024**3:.2f} GB)")
+        return InMemoryHDF5Dataset(str(path))
+    logger.info(f"Streaming {path.name} from disk ({nbytes / 1024**3:.2f} GB > in-memory limit)")
+    return HDF5SequenceDataset(str(path))
+
+
 class SequenceDataModule:
     """
     DataModule for sequence classification.
@@ -359,9 +378,9 @@ class SequenceDataModule:
 
         # If all three split files exist, use them directly
         if val_path.exists() and test_path.exists():
-            train_dataset = HDF5SequenceDataset(str(train_path))
-            val_dataset = HDF5SequenceDataset(str(val_path))
-            test_dataset = HDF5SequenceDataset(str(test_path))
+            train_dataset = _open_split(train_path)
+            val_dataset = _open_split(val_path)
+            test_dataset = _open_split(test_path)
 
             logger.info(
                 f"Using pre-split data: train={len(train_dataset)}, "
