@@ -17,3 +17,16 @@ They are kept only so the mistake stays visible. Do not cite them.
 eight NCBI groups. `metapathpredict prepare --manifest` assigns whole genomes to train/val/test, so
 the val and test splits are species-disjoint from training, and verifies that no species appears in
 two splits. The test split is also written as `test_fragments.fasta` for running other tools.
+
+## Current results: `taxa8_*_test.json`
+
+Species-disjoint test split of `data/datasets/taxa8` (35,268 fragments of 500bp from 235 genomes,
+8 classes, chance = 12.5%), 15 epochs per phase (both phases were still improving at the cap):
+
+| Checkpoint | 8-class accuracy | prokaryote/eukaryote/virus accuracy | Virus recall |
+|---|---|---|---|
+| `contrastive_best.pt` (NT-Xent encoder + linear probe) | 59.0% | 78.1% | 59% |
+| `rl_best.pt` (actor-critic fine-tuning) | 53.7% | 76.5% | 4% |
+
+Protozoa is the weakest class (recall 11% and 0%). Per-class genome counts in val/test are small
+(5-6 for plant and vertebrate), so per-class numbers carry real noise.

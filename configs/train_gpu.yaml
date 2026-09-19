@@ -19,7 +19,7 @@ contrastive:
   temperature: 0.07
   mutation_rate: 0.3
   mask_rate: 0.3
-  num_epochs: 15
+  num_epochs: 50
   learning_rate: 0.0001
   weight_decay: 0.0001
   batch_size: 2048
@@ -37,7 +37,7 @@ rl:
   reward_correct: 1.0
   reward_incorrect: -0.5
   reward_uncertain: -0.1
-  num_epochs: 15
+  num_epochs: 50
   episodes_per_epoch: 16000
   learning_rate: 0.0001
   weight_decay: 0.0001
