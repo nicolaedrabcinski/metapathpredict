@@ -108,6 +108,12 @@ def group_count(channels: int, target: int = 32) -> int:
     return groups
 
 
+def reverse_complement(x: Tensor) -> Tensor:
+    """Reverse complement of one-hot sequences [batch, 4, length] with channels A, C, G, T."""
+    x = torch.flip(x, dims=[-1])
+    return x.index_select(dim=1, index=torch.tensor([3, 2, 1, 0], device=x.device))  # A<->T, C<->G
+
+
 class ConvBlock(nn.Module):
     """
     Convolutional block with optional batch norm, activation, and pooling.

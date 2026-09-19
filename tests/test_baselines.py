@@ -172,3 +172,74 @@ def test_aux_targets_must_match_the_dataset_length():
     x, y = _gc_data(n=10)
     with pytest.raises(ValueError):
         WithAuxTargets(TensorDataset(x, y), np.zeros(9, dtype=int))
+
+
+# ------------------------------------------------------------------ pooling and strand sharing
+from metapathpredict.baselines import build_classifier  # noqa: E402
+from metapathpredict.models.base import reverse_complement  # noqa: E402
+from metapathpredict.models.configurable_cnn import RCShared  # noqa: E402
+
+
+@pytest.mark.parametrize("pool,factor", [("avg", 1), ("max", 1), ("avgmax", 2)])
+@pytest.mark.parametrize("preset", ["small", "multi"])
+def test_pooling_modes_have_consistent_embedding_and_classifier_sizes(pool, factor, preset):
+    model = ConfigurableCNN(num_classes=3, kernel_preset=preset, base_channels=16, pool=pool).eval()
+    x = _gc_data(n=8)[0]
+    embedding = model.get_embeddings(x)
+    assert embedding.shape == (8, model._final_channels) and model.classifier[1].in_features == embedding.shape[1]
+    assert model(x).shape == (8, 3)
+    assert embedding.shape[1] == (model._final_channels // factor) * factor
+
+
+def test_max_pool_differs_from_average_pool_and_bad_names_are_rejected():
+    torch.manual_seed(0)
+    x = _gc_data(n=8)[0]
+    avg = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16, pool="avg").eval()
+    mx = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16, pool="max").eval()
+    mx.features.load_state_dict(avg.features.state_dict())
+    assert (mx.get_embeddings(x) >= avg.get_embeddings(x) - 1e-6).all()      # a maximum is never below the mean
+    assert not torch.allclose(mx.get_embeddings(x), avg.get_embeddings(x))
+    with pytest.raises(ValueError):
+        ConfigurableCNN(num_classes=2, pool="median")
+
+
+@pytest.mark.parametrize("mode", ["mean", "max"])
+def test_strand_sharing_gives_the_same_prediction_for_a_sequence_and_its_reverse_complement(mode):
+    torch.manual_seed(0)
+    x = _gc_data(n=8)[0]
+    plain = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16).eval()
+    shared = RCShared(plain, mode).eval()
+    assert torch.allclose(shared(x), shared(reverse_complement(x)), atol=1e-5)
+    assert not torch.allclose(plain(x), plain(reverse_complement(x)), atol=1e-5)  # the plain CNN is not invariant
+    assert sum(p.numel() for p in shared.parameters()) == sum(p.numel() for p in plain.parameters())  # no extra weights
+    with pytest.raises(ValueError):
+        RCShared(plain, "sum")
+
+
+def test_checkpoint_round_trip_keeps_pool_and_strand_sharing(tmp_path):
+    torch.manual_seed(0)
+    x = _gc_data(n=16)[0]
+    model = build_classifier(2, "small", 16, "batch", "avgmax", "mean").eval()
+    config = {"backbone": "small", "base_channels": 16, "norm": "batch", "pool": "avgmax", "rc_share": "mean", "num_classes": 2}
+    save_supervised_checkpoint(model, tmp_path / "m.pt", config)
+    loaded = load_supervised_checkpoint(tmp_path / "m.pt")
+    assert isinstance(loaded, RCShared) and loaded.base.pool_type == "avgmax"
+    with torch.no_grad():
+        assert torch.allclose(model(x), loaded(x), atol=1e-6)
+
+
+def test_old_checkpoints_without_the_new_fields_still_load(tmp_path):
+    model = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16).eval()
+    torch.save({"state_dict": model.state_dict(), "config": {"backbone": "small", "base_channels": 16, "num_classes": 2}}, tmp_path / "old.pt")
+    assert type(load_supervised_checkpoint(tmp_path / "old.pt")).__name__ == "ConfigurableCNN"
+
+
+def test_a_strand_sharing_model_trains_and_takes_an_auxiliary_head():
+    torch.manual_seed(0)
+    x, y = _gc_data(n=128)
+    loader = DataLoader(WithAuxTargets(TensorDataset(x, y), (y * 2).numpy()), batch_size=32, shuffle=True)
+    val = DataLoader(TensorDataset(*_gc_data(seed=1)), batch_size=64)
+    model = build_classifier(2, "small", 16, "batch", "avgmax", "mean")
+    head = torch.nn.Linear(model._final_channels, 4)
+    out = train_supervised(model, loader, val, "cpu", epochs=4, patience=0, lr=3e-3, augment="none", aux_head=head)
+    assert out["best_val_acc"] > 0.8

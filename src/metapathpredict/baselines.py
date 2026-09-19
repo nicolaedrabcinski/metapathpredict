@@ -55,6 +55,7 @@ def load_backbone_weights(model: nn.Module, checkpoint_path) -> int:
     classifier head freshly initialised. Returns the number of tensors loaded; raises if the
     architectures do not match (a silent partial load would make the comparison meaningless).
     """
+    model = getattr(model, "base", model)  # a strand-sharing wrapper holds the CNN as .base
     checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
     prefix = "encoder."
     state = {k[len(prefix):]: v for k, v in checkpoint["encoder_state_dict"].items()
@@ -121,14 +122,22 @@ def save_supervised_checkpoint(model: nn.Module, path, config: dict) -> None:
     torch.save({"state_dict": model.state_dict(), "config": config}, path)
 
 
-def load_supervised_checkpoint(path, device="cpu") -> nn.Module:
-    """Rebuild the ConfigurableCNN saved by save_supervised_checkpoint, in eval mode."""
-    from metapathpredict.models.configurable_cnn import ConfigurableCNN
+def build_classifier(num_classes: int, backbone: str = "large", base_channels: int = 128, norm: str = "batch",
+                     pool: str = "avg", rc_share: str = "none") -> nn.Module:
+    """A ConfigurableCNN classifier, optionally looking at both strands with shared weights (`rc_share`: mean | max)."""
+    from metapathpredict.models.configurable_cnn import ConfigurableCNN, RCShared
 
+    model = ConfigurableCNN(in_channels=4, num_classes=num_classes, kernel_preset=backbone,
+                            base_channels=base_channels, norm=norm, pool=pool)
+    return model if rc_share == "none" else RCShared(model, rc_share)
+
+
+def load_supervised_checkpoint(path, device="cpu") -> nn.Module:
+    """Rebuild the classifier saved by save_supervised_checkpoint, in eval mode."""
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     config = checkpoint["config"]
-    model = ConfigurableCNN(in_channels=4, num_classes=config["num_classes"], kernel_preset=config["backbone"],
-                            base_channels=config["base_channels"], norm=config.get("norm", "batch"))
+    model = build_classifier(config["num_classes"], config["backbone"], config["base_channels"], config.get("norm", "batch"),
+                             config.get("pool", "avg"), config.get("rc_share", "none"))
     model.load_state_dict(checkpoint["state_dict"])
     return model.to(device).eval()
 

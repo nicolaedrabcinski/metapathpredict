@@ -18,17 +18,10 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from .base import BaseModel
+from .base import reverse_complement  # noqa: F401  (re-exported)
 from .configurable_cnn import ConfigurableCNN
 
 logger = logging.getLogger(__name__)
-
-
-def reverse_complement(x: torch.Tensor) -> torch.Tensor:
-    """Reverse complement of one-hot sequences [batch, 4, length] with channels A, C, G, T."""
-    x = torch.flip(x, dims=[-1])
-    # Complement: swap A<->T (0<->3), C<->G (1<->2)
-    idx = torch.tensor([3, 2, 1, 0], device=x.device)
-    return x.index_select(dim=1, index=idx)
 
 
 class ProjectionHead(nn.Module):
