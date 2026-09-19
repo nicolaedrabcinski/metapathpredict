@@ -73,8 +73,8 @@ def load_summary(path: Path) -> list[dict]:
     return rows
 
 
-def select_genomes(rows: list[dict], n: int, max_bp: float, rng: random.Random) -> list[dict]:
-    """One genome per species, <= MAX_PER_GENUS per genus, random sample of n."""
+def best_per_species(rows: list[dict], max_bp: float) -> list[dict]:
+    """The best assembly (reference > representative, complete > draft) of every species within the size range."""
     best: dict[str, dict] = {}
     for r in rows:
         if r.get("version_status") != "latest" or r.get("ftp_path") in ("", "na"):
@@ -93,7 +93,12 @@ def select_genomes(rows: list[dict], n: int, max_bp: float, rng: random.Random) 
         )
         if key not in best or rank < best[key][0]:
             best[key] = (rank, r)
-    species = [v[1] for v in best.values()]
+    return [v[1] for v in best.values()]
+
+
+def select_genomes(rows: list[dict], n: int, max_bp: float, rng: random.Random) -> list[dict]:
+    """One genome per species, <= MAX_PER_GENUS per genus, random sample of n."""
+    species = best_per_species(rows, max_bp)
     rng.shuffle(species)
 
     picked, per_genus = [], {}
@@ -108,6 +113,46 @@ def select_genomes(rows: list[dict], n: int, max_bp: float, rng: random.Random) 
     return picked
 
 
+def select_new_genomes(candidates: list[dict], n: int, existing: list[dict], lineages: dict,
+                       rng: random.Random) -> list[dict]:
+    """
+    Choose n genomes that add the most taxonomic diversity to `existing` manifest rows: repeatedly take
+    a candidate from the family (then order) with the fewest genomes so far, at most MAX_PER_GENUS per
+    genus. A species with no known family counts as a family of its own.
+    """
+    from metapathpredict.taxonomy import lineage_of
+
+    def ranks(taxid, organism):
+        lin = lineage_of(lineages, taxid)
+        return (lin["family"] or f"sp{taxid}", lin["order"] or f"sp{taxid}",
+                lin["genus"] or (organism.split()[0] if organism else f"sp{taxid}"))
+
+    counts = {"family": {}, "order": {}, "genus": {}}
+    for row in existing:
+        for level, name in zip(("family", "order", "genus"), ranks(row["species_taxid"], row["organism"])):
+            counts[level][name] = counts[level].get(name, 0) + 1
+
+    pool = candidates[:]
+    rng.shuffle(pool)
+    picked = []
+    while pool and len(picked) < n:
+        best_i, best_key = None, None
+        for i, row in enumerate(pool):
+            family, order, genus = ranks(row["species_taxid"], row["organism_name"])
+            if counts["genus"].get(genus, 0) >= MAX_PER_GENUS:
+                continue
+            key = (counts["family"].get(family, 0), counts["order"].get(order, 0))
+            if best_key is None or key < best_key:
+                best_i, best_key = i, key
+        if best_i is None:
+            break
+        row = pool.pop(best_i)
+        for level, name in zip(("family", "order", "genus"), ranks(row["species_taxid"], row["organism_name"])):
+            counts[level][name] = counts[level].get(name, 0) + 1
+        picked.append(row)
+    return picked
+
+
 def download_genome(row: dict, out_dir: Path) -> tuple[dict, bool]:
     acc = row["assembly_accession"]
     dest = out_dir / f"{acc}.fna.gz"
@@ -118,18 +163,83 @@ def download_genome(row: dict, out_dir: Path) -> tuple[dict, bool]:
     return row, run_wget(url, dest)
 
 
+def write_manifest(rows: list[dict], path: Path) -> None:
+    rows = sorted(rows, key=lambda r: (r["group"], r["accession"]))
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(rows[0]), delimiter="\t")
+        w.writeheader()
+        w.writerows(rows)
+
+
+def extend_manifest(args, out: Path, genomes_dir: Path, rng: random.Random) -> None:
+    """Add genomes to manifest.tsv up to the requested totals per group, favouring new families."""
+    from metapathpredict.taxonomy import fetch_lineages
+
+    targets = {k: int(v) for k, v in (item.split("=") for item in args.extend.split(","))}
+    manifest = out / "manifest.tsv"
+    with open(manifest) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    backup = out / "manifest_before_extend.tsv"
+    if not backup.exists():
+        backup.write_text(manifest.read_text())
+    have_species = {r["species_taxid"] for r in rows}
+
+    new_rows: list[dict] = []
+    for group, total in targets.items():
+        n, max_bp = GROUPS[group]
+        existing = [r for r in rows if r["group"] == group]
+        need = total - len(existing)
+        if need <= 0:
+            logger.info(f"{group}: already {len(existing)} >= {total}")
+            continue
+        summary = out / "summaries" / f"{group}.txt"
+        candidates = [r for r in best_per_species(load_summary(summary), max_bp) if r["species_taxid"] not in have_species]
+        lineages = fetch_lineages([r["species_taxid"] for r in candidates] + [r["species_taxid"] for r in existing],
+                                  out / "lineages.json")
+        picked = select_new_genomes(candidates, need, existing, lineages, rng)
+        logger.info(f"{group}: {len(existing)} present, {len(candidates)} candidates, adding {len(picked)} (wanted {need})")
+        if args.dry_run:
+            families = {lineages.get(r["species_taxid"], {}).get("family") for r in existing}
+            new_families = {lineages.get(r["species_taxid"], {}).get("family") for r in picked} - families
+            size_gb = sum(float(r["genome_size"]) for r in picked) / 1e9
+            logger.info(f"  dry run: {len(new_families)} families not in the manifest yet, "
+                        f"~{size_gb:.0f} Gb of sequence (~{size_gb * 0.3:.0f} GB compressed)")
+            continue
+        with ThreadPoolExecutor(args.workers) as pool:
+            futures = [pool.submit(download_genome, r, genomes_dir) for r in picked]
+            for done, fut in enumerate(as_completed(futures), 1):
+                row, ok = fut.result()
+                if not ok:
+                    logger.warning(f"  failed: {row['assembly_accession']} {row['organism_name']}")
+                    continue
+                new_rows.append({"accession": row["assembly_accession"], "group": group,
+                                 "species_taxid": row["species_taxid"], "organism": row["organism_name"],
+                                 "genome_size": row["genome_size"], "path": f"genomes/{row['assembly_accession']}.fna.gz"})
+                have_species.add(row["species_taxid"])
+                if done % 10 == 0:
+                    logger.info(f"  {group}: {done}/{len(picked)} downloaded")
+        write_manifest(rows + new_rows, manifest)  # after every group, so an interruption keeps the progress
+    logger.info(f"manifest: {len(rows) + len(new_rows)} genomes ({len(new_rows)} new) -> {manifest}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--output", default="data/genomes")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--workers", type=int, default=4)
     ap.add_argument("--scale", type=float, default=1.0, help="multiply every group's genome count")
+    ap.add_argument("--extend", help="add genomes to the existing manifest, e.g. plant=120,invertebrate=140 "
+                    "(target totals per RefSeq group); new genomes are picked for taxonomic novelty")
+    ap.add_argument("--dry-run", action="store_true", help="with --extend: show what would be added, download nothing")
     args = ap.parse_args()
 
     out = Path(args.output)
     genomes_dir = out / "genomes"
     rng = random.Random(args.seed)
     manifest_rows: list[dict] = []
+    if args.extend:
+        extend_manifest(args, out, genomes_dir, rng)
+        return
 
     for group, (n, max_bp) in GROUPS.items():
         summary = out / "summaries" / f"{group}.txt"
