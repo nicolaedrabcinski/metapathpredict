@@ -1,26 +1,22 @@
-# Hydra experiment config for the contrastive+RL pipeline.
-# Mirrors configs/train_gpu.yaml, but targets the small smoke-test dataset
-# and gives every run its own tracked directory under experiments/.
+# Hydra experiment config, mirrors configs/train_gpu.yaml. Every run gets its own tracked
+# directory under experiments/ with the resolved config and the log.
 #
 # Usage:
-#   metapathpredict-experiment                                  # baseline
-#   metapathpredict-experiment contrastive.temperature=0.5       # one change at a time
-#   metapathpredict-experiment -m contrastive.temperature=0.07,0.3,0.5   # sweep
+#   python scripts/run_experiment.py experiment_name=bs512 contrastive.batch_size=512 contrastive.learning_rate=2.8e-4
+#   python scripts/run_experiment.py pipeline=full            # also run the RL phase
 
 experiment_name: baseline
+pipeline: contrastive   # contrastive = encoder + linear probe; full = also RL fine-tuning
+max_threads: 16
 
 data:
   default_fragment_size: 500
-  num_workers: 4
+  num_workers: 8
   train_ratio: 0.7
   val_ratio: 0.15
   test_ratio: 0.15
 
-# NOTE: the actual DataLoader batch size used by every pipeline (including
-# contrastive/RL) comes from training.batch_size, not contrastive.batch_size
-# (SequenceDataModule.from_config reads training_config.batch_size — see
-# src/metapathpredict/data/datamodule.py:375). contrastive.batch_size below
-# is currently dead config, kept only for parity with train_gpu.yaml.
+# Loader batch size for the RL phase and evaluation (contrastive has its own below).
 training:
   batch_size: 64
 
@@ -33,10 +29,12 @@ contrastive:
   temperature: 0.07
   mutation_rate: 0.3
   mask_rate: 0.3
-  num_epochs: 1
+  num_epochs: 50
   learning_rate: 0.0001
   weight_decay: 0.0001
-  batch_size: 2048
+  batch_size: 64
+  early_stopping_patience: 7
+  probe_epochs: 15
 
 rl:
   algorithm: "actor_critic"
@@ -45,27 +43,22 @@ rl:
   reward_correct: 1.0
   reward_incorrect: -0.5
   reward_uncertain: -0.1
-  num_epochs: 1
-  episodes_per_epoch: 1000
+  num_epochs: 50
+  episodes_per_epoch: 64000
   batch_size: 32
   learning_rate: 0.0001
   weight_decay: 0.0001
   gamma: 0.99
-  epsilon_start: 1.0
-  epsilon_end: 0.05
-  epsilon_decay_epochs: 5
-  replay_buffer_size: 10000
-  target_update_freq: 5
+  early_stopping_patience: 7
 
 project_name: "metapathpredict-experiments"
 
 paths:
   base_dir: "."
   data_dir: "data"
-  datasets_dir: "data/datasets/unified_small"
+  datasets_dir: "data/datasets/taxa8"
   # weights_dir / logs_dir are overridden at runtime to the Hydra run dir
-  # (scripts/run_experiment.py) so every experiment's checkpoints are isolated.
-  weights_dir: "data/weights/unified_small"
+  weights_dir: "data/weights/taxa8"
   predictions_dir: "data/output/predictions"
   logs_dir: "logs"
 

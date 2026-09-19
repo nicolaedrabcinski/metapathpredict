@@ -62,6 +62,23 @@ class EarlyStopping:
         return self.counter >= self.patience
 
 
+def _cap_threads(settings, max_threads: int) -> None:
+    """Cap torch CPU threads and DataLoader workers (call before building the data module)."""
+    torch.set_num_threads(max_threads)
+    if settings.data.num_workers > max_threads:
+        logger.info(f"Capping data.num_workers {settings.data.num_workers} -> {max_threads}")
+        settings.data.num_workers = max_threads
+
+
+def _apply_dataset_labels(settings, data_module) -> None:
+    """The prepared dataset (HDF5 attrs written by `prepare`) decides the label space."""
+    settings.model.num_classes = getattr(data_module.train_dataset, "num_classes", 3)
+    settings.data.class_names = list(
+        getattr(data_module.train_dataset, "class_names", settings.data.class_names)
+    )
+    logger.info(f"Classes ({settings.model.num_classes}): {settings.data.class_names}")
+
+
 def train_command(args: argparse.Namespace) -> int:
     """Train a model using the specified pipeline."""
     from metapathpredict.config import Settings
@@ -83,11 +100,7 @@ def train_command(args: argparse.Namespace) -> int:
 
     # Cap CPU thread usage (torch intra-op parallelism + DataLoader workers)
     # regardless of how many cores are available on the box.
-    max_threads = getattr(args, "max_threads", 16)
-    torch.set_num_threads(max_threads)
-    if settings.data.num_workers > max_threads:
-        logger.info(f"Capping data.num_workers {settings.data.num_workers} -> {max_threads}")
-        settings.data.num_workers = max_threads
+    _cap_threads(settings, getattr(args, "max_threads", 16))
 
     device = setup_device(args)
     logger.info(f"Training on {device}")
@@ -96,10 +109,7 @@ def train_command(args: argparse.Namespace) -> int:
 
     logger.info("Loading datasets...")
     data_module = SequenceDataModule.from_config(settings)
-    # The dataset (HDF5 attrs written by `prepare`) decides the label space.
-    settings.model.num_classes = getattr(data_module.train_dataset, "num_classes", 3)
-    settings.data.class_names = list(getattr(data_module.train_dataset, "class_names", settings.data.class_names))
-    logger.info(f"Classes ({settings.model.num_classes}): {settings.data.class_names}")
+    _apply_dataset_labels(settings, data_module)
     logger.info(
         f"Datasets loaded: train={len(data_module.train_dataset)}, "
         f"val={len(data_module.val_dataset)}, "
@@ -263,8 +273,10 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
 
     from tqdm import tqdm
 
-    train_loader = data_module.train_dataloader()
-    val_loader = data_module.val_dataloader()
+    # contrastive.batch_size sets how many negatives each anchor sees (2*batch - 2 with
+    # NT-Xent). It used to be ignored: both phases silently used training.batch_size.
+    train_loader = data_module.train_dataloader(batch_size=cfg.batch_size)
+    val_loader = data_module.val_dataloader(batch_size=cfg.batch_size)
     num_batches = len(train_loader)
     logger.info(f"Train loader: {num_batches} batches (batch_size={train_loader.batch_size})")
     logger.info("Starting contrastive training...")

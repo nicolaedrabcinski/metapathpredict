@@ -21,12 +21,14 @@ two splits. The test split is also written as `test_fragments.fasta` for running
 ## Current results: `taxa8_*_test.json`
 
 Species-disjoint test split of `data/datasets/taxa8` (35,268 fragments of 500bp from 235 genomes,
-8 classes, chance = 12.5%), 15 epochs per phase (both phases were still improving at the cap):
+8 classes, chance = 12.5%). Accuracy is on 8 classes, then rolled up to prokaryote/eukaryote/virus.
 
-| Checkpoint | 8-class accuracy | prokaryote/eukaryote/virus accuracy | Virus recall |
-|---|---|---|---|
-| `contrastive_best.pt` (NT-Xent encoder + linear probe) | 59.0% | 78.1% | 59% |
-| `rl_best.pt` (actor-critic fine-tuning) | 53.7% | 76.5% | 4% |
+| Run | Checkpoint | 8-class | 3-class roll-up | Virus recall |
+|---|---|---|---|---|
+| 15 epochs per phase (still improving at the cap) | contrastive + probe | 59.0% | 78.1% | 59% |
+| | RL | 53.7% | 76.5% | 4% |
+| 50-epoch ceiling, patience 7 (contrastive stopped at 47, RL at 35), 15 probe epochs, 64k RL episodes per epoch | contrastive + probe | 60.7% | **82.5%** | 44% |
+| (`taxa8_50ep_*.json`) | RL | **63.2%** | 80.4% | 56% |
 
-Protozoa is the weakest class (recall 11% and 0%). Per-class genome counts in val/test are small
+Protozoa is the weakest class (recall 22-27% at best). Per-class genome counts in val/test are small
 (5-6 for plant and vertebrate), so per-class numbers carry real noise.

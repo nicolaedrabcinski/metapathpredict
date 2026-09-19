@@ -114,11 +114,26 @@ class SequenceDataModule:
         self._val_loader: DataLoader | None = None
         self._test_loader: DataLoader | None = None
     
-    def train_dataloader(self) -> DataLoader:
-        """Get training dataloader."""
+    def _loader(self, dataset: Dataset, batch_size: int, shuffle: bool, drop_last: bool) -> DataLoader:
+        return DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+            persistent_workers=self.persistent_workers,
+            drop_last=drop_last,
+            prefetch_factor=self.prefetch_factor,
+        )
+
+    def train_dataloader(self, batch_size: int | None = None) -> DataLoader:
+        """Get training dataloader. A `batch_size` override returns a separate, uncached loader."""
         if self.train_dataset is None:
             raise ValueError("Training dataset not set")
-        
+
+        if batch_size is not None and batch_size != self.batch_size:
+            return self._loader(self.train_dataset, batch_size, shuffle=True, drop_last=True)
+
         if self._train_loader is None:
             self._train_loader = DataLoader(
                 self.train_dataset,
@@ -133,11 +148,15 @@ class SequenceDataModule:
         
         return self._train_loader
     
-    def val_dataloader(self) -> DataLoader:
-        """Get validation dataloader."""
+    def val_dataloader(self, batch_size: int | None = None) -> DataLoader:
+        """Get validation dataloader. A `batch_size` override returns a separate, uncached loader."""
         if self.val_dataset is None:
             raise ValueError("Validation dataset not set")
-        
+
+        if batch_size is not None:
+            # drop_last keeps every batch the same size: the contrastive loss depends on batch size
+            return self._loader(self.val_dataset, batch_size, shuffle=False, drop_last=True)
+
         if self._val_loader is None:
             self._val_loader = DataLoader(
                 self.val_dataset,
