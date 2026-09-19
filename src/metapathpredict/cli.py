@@ -1076,6 +1076,47 @@ def _assign_sequence_splits(
     return splits
 
 
+def _assign_group_splits(groups: list[str], ratios: dict[str, float], rng: np.random.RandomState) -> list[str]:
+    """
+    Assign whole groups (e.g. families) to train/val/test so the share of genomes in each split follows
+    `ratios`. Groups are placed largest first into the split with the largest remaining deficit, ties
+    broken at random; every split gets at least one group when there are enough groups.
+    """
+    names = list(ratios)
+    members: dict[str, list[int]] = {}
+    for index, group in enumerate(groups):
+        members.setdefault(group, []).append(index)
+    keys = list(members)
+    rng.shuffle(keys)
+    keys.sort(key=lambda k: -len(members[k]))  # stable: equal-sized groups stay in random order
+
+    targets = {s: ratios[s] * len(groups) for s in names}
+    load = {s: 0 for s in names}
+    placed: dict[str, list[str]] = {s: [] for s in names}
+    for key in keys:
+        split = max(names, key=lambda s: targets[s] - load[s])
+        placed[split].append(key)
+        load[split] += len(members[key])
+
+    for empty in [s for s in names if not placed[s]]:
+        donors = [s for s in names if len(placed[s]) > 1]
+        if not donors:
+            break
+        donor = max(donors, key=lambda s: load[s])
+        smallest = min(placed[donor], key=lambda k: len(members[k]))
+        placed[donor].remove(smallest)
+        placed[empty].append(smallest)
+        load[donor] -= len(members[smallest])
+        load[empty] += len(members[smallest])
+
+    result = [""] * len(groups)
+    for split, split_keys in placed.items():
+        for key in split_keys:
+            for index in members[key]:
+                result[index] = split
+    return result
+
+
 class _SplitWriter:
     """Growable HDF5 (sequences, labels) file with a chunk buffer."""
 
@@ -1174,7 +1215,24 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
     ratios = {"train": settings.data.train_ratio, "val": settings.data.val_ratio, "test": settings.data.test_ratio}
     split_names = tuple(ratios)
     per_class = args.fragments_per_class
-    rng = np.random.RandomState(42)
+    split_by = getattr(args, "split_by", "genome")
+    split_seed = getattr(args, "split_seed", 42)
+    rng = np.random.RandomState(split_seed)
+    from metapathpredict.taxonomy import RANKS, fetch_lineages, lineage_of, load_lineages
+
+    lineage_cache = root / "lineages.json"
+    if split_by == "family":
+        lineages = fetch_lineages([r["species_taxid"] for r in rows], lineage_cache)
+    else:
+        lineages = load_lineages(lineage_cache)  # optional: only annotates split_assignments.tsv
+
+    def group_key(genome: dict) -> str:
+        lineage = lineage_of(lineages, genome["species_taxid"])
+        for rank in ("family", "genus"):
+            if lineage[rank]:
+                return f"{rank}:{lineage[rank]}"
+        return f"genome:{genome['accession']}"
+
     encoder = OneHotEncoder()
     attrs = {
         "num_classes": len(TAXON_CLASSES),
@@ -1193,9 +1251,12 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
 
     for label, name in enumerate(TAXON_CLASSES):
         genomes = sorted(by_class[name], key=lambda r: r["accession"])
-        genome_split = _assign_sequence_splits(
-            len(genomes), ratios["train"], ratios["val"], ratios["test"], rng
-        )
+        if split_by == "family":
+            genome_split = _assign_group_splits([group_key(g) for g in genomes], ratios, rng)
+        else:
+            genome_split = _assign_sequence_splits(
+                len(genomes), ratios["train"], ratios["val"], ratios["test"], rng
+            )
         for split in split_names:
             members = [g for g, gs in zip(genomes, genome_split) if gs == split]
             budget = round(per_class * ratios[split])
@@ -1227,6 +1288,8 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
                     "accession": genome["accession"], "class": name, "split": split,
                     "species_taxid": genome["species_taxid"], "organism": genome["organism"],
                     "fragments": taken,
+                    **lineage_of(lineages, genome["species_taxid"]),
+                    "group": group_key(genome),
                 })
                 done += 1
                 if done % 25 == 0:
@@ -1246,6 +1309,16 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
         logger.error(f"Species present in more than one split: {shared[:10]}")
         return 1
     logger.info(f"Verified: {len(species_splits)} species, none shared across train/val/test")
+    if split_by == "family":
+        group_splits: dict[str, set] = {}
+        for a in assignments:
+            if a["group"].startswith(("family:", "genus:")):
+                group_splits.setdefault(a["group"], set()).add(a["split"])
+        straddling = [g for g, gs in group_splits.items() if len(gs) > 1]
+        if straddling:
+            logger.error(f"Families present in more than one split: {straddling[:10]}")
+            return 1
+        logger.info(f"Verified: {len(group_splits)} families/genera, none shared across train/val/test")
 
     with open(output_dir / "split_assignments.tsv", "w") as f:
         w = csv.DictWriter(f, fieldnames=list(assignments[0]), delimiter="\t")
@@ -1266,7 +1339,12 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
             n: {s: sum(1 for a in assignments if a["class"] == n and a["split"] == s) for s in split_names}
             for n in TAXON_CLASSES
         },
-        "split_method": "genome-level, one genome per species (species-disjoint)",
+        "split_method": (
+            "genome-level, one genome per species, whole families kept in one split (family-disjoint)"
+            if split_by == "family" else "genome-level, one genome per species (species-disjoint)"
+        ),
+        "split_by": split_by,
+        "split_seed": split_seed,
     }
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
@@ -1672,6 +1750,12 @@ def main() -> int:
                                 "(8 taxonomic classes, split by genome/species)")
     prepare_parser.add_argument("--fragments-per-class", type=int, default=30000,
                                 help="With --manifest: target fragments per class across all splits")
+    prepare_parser.add_argument("--split-by", choices=["family", "genome"], default="family",
+                                help="With --manifest: family keeps every family in one split (needs the NCBI "
+                                "lineage cache lineages.json next to the manifest; missing ids are fetched), "
+                                "genome only keeps species apart")
+    prepare_parser.add_argument("--split-seed", type=int, default=42,
+                                help="With --manifest: random seed of the split (and of fragment sampling)")
     prepare_parser.add_argument("--output", "-o", required=True, help="Output directory")
     prepare_parser.add_argument("--config", "-c", help="Path to config file")
     prepare_parser.add_argument("--length", "-l", type=int, help="Sequence length")

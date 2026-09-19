@@ -183,3 +183,73 @@ class TestPrepareFromManifest:
             w.writerow({"accession": "GCF_1", "group": "bacteria", "species_taxid": "1",
                         "organism": "x", "genome_size": "1000", "path": "genomes/none.fna.gz"})
         assert _run_prepare(manifest, tmp_path / "out") == 1
+
+
+class TestFamilySplit:
+    RATIOS = {"train": 0.7, "val": 0.15, "test": 0.15}
+
+    def test_groups_never_straddle_splits_and_every_split_is_used(self):
+        from metapathpredict.cli import _assign_group_splits
+
+        groups = [f"f{i}" for i in range(12) for _ in range(1 + i % 4)]  # 12 families of 1-4 genomes
+        splits = _assign_group_splits(groups, self.RATIOS, np.random.RandomState(0))
+        by_group = {}
+        for g, s in zip(groups, splits):
+            by_group.setdefault(g, set()).add(s)
+        assert all(len(v) == 1 for v in by_group.values())
+        assert set(splits) == {"train", "val", "test"}
+        assert splits.count("train") > splits.count("val") and splits.count("train") > splits.count("test")
+
+    def test_is_deterministic_per_seed_and_the_seed_changes_the_split(self):
+        from metapathpredict.cli import _assign_group_splits
+
+        groups = [f"f{i}" for i in range(30) for _ in range(2)]
+        a = _assign_group_splits(groups, self.RATIOS, np.random.RandomState(1))
+        b = _assign_group_splits(groups, self.RATIOS, np.random.RandomState(1))
+        c = _assign_group_splits(groups, self.RATIOS, np.random.RandomState(2))
+        assert a == b and a != c
+
+    def test_three_groups_give_one_group_per_split(self):
+        from metapathpredict.cli import _assign_group_splits
+
+        splits = _assign_group_splits(["a", "a", "a", "b", "b", "c"], self.RATIOS, np.random.RandomState(0))
+        assert sorted(set(splits)) == ["test", "train", "val"]
+
+    def test_prepare_keeps_families_together_and_records_lineage(self, tmp_path):
+        import json
+
+        rng = np.random.RandomState(0)
+        rows, lineages = [], {}
+        (tmp_path / "genomes").mkdir()
+        for gi, group in enumerate(NCBI_GROUP_TO_TAXON):
+            for k in range(6):
+                acc, taxid = f"GCF_{gi:03d}{k:03d}.1", str(1000 * gi + k)
+                seq = "".join(rng.choice(list("ACGT"), size=4000))
+                with gzip.open(tmp_path / "genomes" / f"{acc}.fna.gz", "wt") as f:
+                    f.write(f">{acc}\n{seq}\n")
+                rows.append({"accession": acc, "group": group, "species_taxid": taxid, "organism": f"Testus {group}{k}",
+                             "genome_size": "4000", "path": f"genomes/{acc}.fna.gz"})
+                lineages[taxid] = {"phylum": "P", "class": "C", "order": f"O{gi}", "family": f"F{gi}_{k // 2}",
+                                   "genus": f"G{gi}_{k}"}
+        manifest = tmp_path / "manifest.tsv"
+        with open(manifest, "w", newline="") as f:
+            w = csv.DictWriter(f, fieldnames=list(rows[0]), delimiter="\t")
+            w.writeheader()
+            w.writerows(rows)
+        (tmp_path / "lineages.json").write_text(json.dumps(lineages))  # complete cache: no network
+
+        args = argparse.Namespace(
+            inputs=[], manifest=str(manifest), output=str(tmp_path / "out"), config=None, length=100,
+            max_fragments=None, chunk_size=50, fragments_per_class=120, split_by="family", split_seed=7,
+        )
+        assert prepare_command(args) == 0
+        with open(tmp_path / "out" / "split_assignments.tsv") as f:
+            assignments = list(csv.DictReader(f, delimiter="\t"))
+        assert {"phylum", "class", "order", "family", "genus", "group"} <= set(assignments[0])
+        family_splits = {}
+        for a in assignments:
+            family_splits.setdefault(a["family"], set()).add(a["split"])
+        assert len(family_splits) == len(NCBI_GROUP_TO_TAXON) * 3 and all(len(v) == 1 for v in family_splits.values())
+        assert {a["split"] for a in assignments} == {"train", "val", "test"}
+        meta = json.loads((tmp_path / "out" / "metadata.json").read_text())
+        assert meta["split_by"] == "family" and meta["split_seed"] == 7 and "family-disjoint" in meta["split_method"]
