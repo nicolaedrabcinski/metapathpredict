@@ -11,6 +11,7 @@ from metapathpredict.baselines import (
     load_backbone_weights,
     load_supervised_checkpoint,
     predict_probabilities,
+    WithAuxTargets,
     save_supervised_checkpoint,
     train_supervised,
 )
@@ -144,3 +145,30 @@ def test_cosine_schedule_anneals_the_learning_rate_and_bad_names_are_rejected(mo
     assert created[-1].param_groups[0]["lr"] == pytest.approx(1e-2)  # constant by default
     with pytest.raises(ValueError):
         train_supervised(model, loader, loader, "cpu", epochs=1, lr_schedule="linear")
+
+
+def test_auxiliary_head_is_trained_and_unlabelled_items_are_ignored():
+    torch.manual_seed(0)
+    x, y = _gc_data(n=128)
+    aux = torch.where(torch.arange(len(y)) % 4 == 0, torch.full_like(y, -100), y * 2 + (torch.arange(len(y)) % 2))  # 4 aux classes
+    loader = DataLoader(WithAuxTargets(TensorDataset(x, y), aux.numpy()), batch_size=32, shuffle=True)
+    val = DataLoader(TensorDataset(*_gc_data(seed=1)), batch_size=64)
+    model = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16)
+    head = torch.nn.Linear(model._final_channels, 4)
+    before = head.weight.detach().clone()
+    out = train_supervised(model, loader, val, "cpu", epochs=4, patience=0, lr=3e-3, augment="none", aux_head=head, aux_weight=0.5)
+    assert not torch.equal(before, head.weight.detach())   # the auxiliary head took part in the optimisation
+    assert out["best_val_acc"] > 0.8                       # and the main task still works
+
+
+def test_without_an_auxiliary_head_the_batches_may_carry_extra_labels():
+    x, y = _gc_data(n=64)
+    loader = DataLoader(WithAuxTargets(TensorDataset(x, y), np.zeros(64, dtype=int)), batch_size=32)
+    model = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16)
+    train_supervised(model, loader, DataLoader(TensorDataset(x, y), batch_size=32), "cpu", epochs=1, patience=0)
+
+
+def test_aux_targets_must_match_the_dataset_length():
+    x, y = _gc_data(n=10)
+    with pytest.raises(ValueError):
+        WithAuxTargets(TensorDataset(x, y), np.zeros(9, dtype=int))

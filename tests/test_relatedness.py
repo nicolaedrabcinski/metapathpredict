@@ -104,3 +104,27 @@ def test_evaluate_by_genome_reads_split_assignments_next_to_the_fasta(assignment
     (tmp / "test_fragments.fasta").write_text("".join(f">x|label=0|acc={a}\nAC\n" for a in ("x_genus", "x_genus", "x_none", "x_none")))
     report = evaluate_by_genome(tmp, t, np.array([0, 0, 1, 1]), CLASSES, n_boot=20)
     assert report["near_far"]["near"]["accuracy"] == 1.0 and report["near_far"]["far"]["accuracy"] == 0.0
+
+
+def test_lineage_targets_label_every_fragment_and_ignore_unknown_names(tmp_path):
+    from metapathpredict.relatedness import fragment_genomes, lineage_targets
+
+    path = tmp_path / "split_assignments.tsv"
+    _write(path, [
+        {**_row("a", "bacteria", "train", phylum="P1"), "fragments": 3},
+        {**_row("b", "bacteria", "train", phylum="P2"), "fragments": 2},
+        {**_row("c", "fungi", "train", phylum=""), "fragments": 1},          # no phylum known
+        {**_row("d", "fungi", "val", phylum="P9"), "fragments": 2},           # a phylum the training split never saw
+    ])
+    assert fragment_genomes(tmp_path, "train").tolist() == ["a", "a", "a", "b", "b", "c"]
+    labels, names = lineage_targets(tmp_path, "train", "phylum")
+    assert names == ["P1", "P2"] and labels.tolist() == [0, 0, 0, 1, 1, -100]
+    val_labels, _ = lineage_targets(tmp_path, "val", "phylum", names=names)
+    assert val_labels.tolist() == [-100, -100]
+    with pytest.raises(ValueError):
+        lineage_targets(tmp_path, "train", "kingdom")
+    (tmp_path / "plain.tsv").write_text("accession\tclass\tsplit\tspecies_taxid\tfragments\nA\tbacteria\ttrain\t1\t2\n")
+    (tmp_path / "plain").mkdir()
+    (tmp_path / "plain" / "split_assignments.tsv").write_text((tmp_path / "plain.tsv").read_text())
+    with pytest.raises(ValueError):
+        lineage_targets(tmp_path / "plain", "train", "phylum")

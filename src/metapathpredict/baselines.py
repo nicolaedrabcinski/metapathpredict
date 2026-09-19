@@ -89,6 +89,22 @@ def evaluate_accuracy(model: nn.Module, loader, device) -> tuple[float, np.ndarr
     return float((targets == preds).mean()), targets, preds
 
 
+class WithAuxTargets(torch.utils.data.Dataset):
+    """A dataset of (x, y) pairs that also returns an auxiliary label per item: (x, y, aux)."""
+
+    def __init__(self, base, aux: np.ndarray):
+        if len(base) != len(aux):
+            raise ValueError(f"{len(aux)} auxiliary labels for {len(base)} items")
+        self.base, self.aux = base, torch.as_tensor(aux, dtype=torch.long)
+
+    def __len__(self) -> int:
+        return len(self.base)
+
+    def __getitem__(self, i):
+        x, y = self.base[i][:2]
+        return x, y, self.aux[i]
+
+
 def predict_probabilities(model: nn.Module, loader, device) -> tuple[np.ndarray, np.ndarray]:
     """Targets [n] and softmax probabilities [n, classes] of `model` (eval mode) over a loader."""
     model.eval()
@@ -130,29 +146,48 @@ def train_supervised(
     augmentation: ContrastiveAugmentation | None = None,
     sink=None,
     lr_schedule: str = "constant",
+    aux_head: nn.Module | None = None,
+    aux_weight: float = 0.3,
 ) -> dict:
     """
     Train `model` (a classifier: [batch, 4, length] -> logits) with cross-entropy and keep the weights
     of the epoch with the best validation accuracy. `augment`: none | rc (random reverse complement) |
     full (the contrastive augmentation, first view only). `lr_schedule`: constant | cosine (annealed to 0 over
-    `epochs`). Returns {"best_val_acc", "best_epoch", "history"}.
+    `epochs`). With `aux_head` (a module mapping the pooled embedding to auxiliary classes) and batches of
+    (x, y, aux), the loss adds `aux_weight` times the cross-entropy of the auxiliary labels (-100 is ignored):
+    a second, finer supervision signal that shapes the shared features and is thrown away afterwards.
+    Returns {"best_val_acc", "best_epoch", "history"}.
     """
     if lr_schedule not in ("constant", "cosine"):
         raise ValueError(f"lr_schedule must be constant or cosine, got {lr_schedule!r}")
     if augment == "full" and augmentation is None:
         augmentation = ContrastiveAugmentation()
     model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    if aux_head is not None:
+        aux_head.to(device)
+    parameters = list(model.parameters()) + (list(aux_head.parameters()) if aux_head is not None else [])
+    optimizer = torch.optim.AdamW(parameters, lr=lr, weight_decay=weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs) if lr_schedule == "cosine" else None
     best_acc, best_epoch, best_state, stale, history = -1.0, 0, None, 0, []
 
     for epoch in range(1, epochs + 1):
         model.train()
+        if aux_head is not None:
+            aux_head.train()
         total, correct, seen = 0.0, 0, 0
         for batch in train_loader:
             x, y = batch[0].to(device), batch[1].to(device)
-            logits = model(_augment(x, augment, augmentation))
-            loss = F.cross_entropy(logits, y)
+            x = _augment(x, augment, augmentation)
+            if aux_head is not None and len(batch) > 2:
+                embedding = model.get_embeddings(x)
+                logits = model.classifier(embedding)
+                loss = F.cross_entropy(logits, y)
+                aux = batch[2].to(device)
+                if (aux != -100).any():
+                    loss = loss + aux_weight * F.cross_entropy(aux_head(embedding), aux, ignore_index=-100)
+            else:
+                logits = model(x)
+                loss = F.cross_entropy(logits, y)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()

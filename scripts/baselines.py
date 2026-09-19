@@ -26,6 +26,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from metapathpredict.baselines import (
+    WithAuxTargets,
     kmer_frequencies,
     load_backbone_weights,
     predict_probabilities,
@@ -102,12 +103,22 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
     np.random.seed(args.seed)
     device = torch.device(args.device)
     splits = {s: _open_split(data_dir / f"encoded_{s}_{args.fragment_size}.hdf5") for s in ("train", "val", "test")}
+    aux_head = None
+    if args.aux_rank:
+        from metapathpredict.relatedness import lineage_targets
+
+        aux, aux_names = lineage_targets(data_dir, "train", args.aux_rank)
+        splits["train"] = WithAuxTargets(splits["train"], aux)
+        logger.info(f"Auxiliary task: {args.aux_rank} of the genome, {len(aux_names)} classes, "
+                    f"{int((aux == -100).sum())} of {len(aux)} training fragments unlabelled")
     train_loader = DataLoader(splits["train"], batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=0)
     val_loader = DataLoader(splits["val"], batch_size=512, shuffle=False, num_workers=0)
     test_loader = DataLoader(splits["test"], batch_size=512, shuffle=False, num_workers=0)
 
     model = ConfigurableCNN(in_channels=4, num_classes=len(class_names), kernel_preset=args.backbone,
                             base_channels=args.base_channels, norm=args.norm)
+    if args.aux_rank:
+        aux_head = torch.nn.Linear(model._final_channels, len(aux_names))
     if args.init_from:
         loaded = load_backbone_weights(model, args.init_from)
         logger.info(f"Initialised the backbone from {args.init_from} ({loaded} tensors); classifier head is new")
@@ -120,11 +131,13 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
                          "batch_size": args.batch_size, "epochs": args.epochs, "patience": args.patience,
                          "seed": args.seed, "mutation_rate": args.mutation_rate, "mask_rate": args.mask_rate,
                          "init_from": args.init_from or "scratch", "lr_schedule": args.lr_schedule,
+                         "aux_rank": args.aux_rank or "none", "aux_weight": args.aux_weight,
                          "dataset": str(data_dir)})
         start = time.time()
         fit = train_supervised(model, train_loader, val_loader, device, epochs=args.epochs, patience=args.patience,
                                lr=args.lr, weight_decay=args.weight_decay, augment=args.augment,
-                               augmentation=augmentation, sink=sink, lr_schedule=args.lr_schedule)
+                               augmentation=augmentation, sink=sink, lr_schedule=args.lr_schedule,
+                               aux_head=aux_head, aux_weight=args.aux_weight)
         logger.info(f"best val accuracy {fit['best_val_acc']:.4f} at epoch {fit['best_epoch']} ({time.time() - start:.0f}s)")
         targets, probs = predict_probabilities(model, test_loader, device)
         out_dir = REPO_ROOT / "experiments" / "baselines" / name
@@ -162,6 +175,9 @@ def main() -> None:
     sup.add_argument("--norm", choices=["batch", "group"], default="batch")
     sup.add_argument("--init-from", help="contrastive checkpoint whose backbone initialises the CNN")
     sup.add_argument("--lr-schedule", choices=["constant", "cosine"], default="constant")
+    sup.add_argument("--aux-rank", choices=["phylum", "class", "order", "family", "genus"],
+                     help="auxiliary head predicting the taxonomic rank of the genome (needs lineage columns)")
+    sup.add_argument("--aux-weight", type=float, default=0.3, help="weight of the auxiliary loss")
     sup.add_argument("--save-checkpoint", action="store_true", help="also save the weights as model.pt")
     sup.add_argument("--mutation-rate", type=float, default=0.3, help="augment=full")
     sup.add_argument("--mask-rate", type=float, default=0.3, help="augment=full")

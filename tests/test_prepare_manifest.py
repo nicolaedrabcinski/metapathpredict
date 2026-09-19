@@ -252,5 +252,23 @@ class TestFamilySplit:
             family_splits.setdefault(a["lineage_family"], set()).add(a["split"])
         assert len(family_splits) == len(NCBI_GROUP_TO_TAXON) * 3 and all(len(v) == 1 for v in family_splits.values())
         assert {a["split"] for a in assignments} == {"train", "val", "test"}
+        # the genome of every fragment can be rebuilt from the assignments alone
+        import h5py
+
+        from metapathpredict.relatedness import fragment_genomes, lineage_targets
+
+        out = tmp_path / "out"
+        fasta_accessions = [l.strip().split("|acc=")[1] for l in open(out / "test_fragments.fasta") if l.startswith(">")]
+        assert fragment_genomes(out, "test").tolist() == fasta_accessions
+        names = json.loads((out / "metadata.json").read_text())["class_names"]
+        by_accession = {a["accession"]: a["class"] for a in assignments}
+        for split in ("train", "val", "test"):
+            genomes = fragment_genomes(out, split)
+            with h5py.File(out / f"encoded_{split}_100.hdf5") as f:
+                labels = f["labels"][:]
+            assert len(genomes) == len(labels)
+            assert [names.index(by_accession[g]) for g in genomes] == labels.tolist()
+        targets, phyla = lineage_targets(out, "train", "family")
+        assert len(targets) == len(fragment_genomes(out, "train")) and (targets >= 0).all() and len(phyla) > 1
         meta = json.loads((tmp_path / "out" / "metadata.json").read_text())
         assert meta["split_by"] == "family" and meta["split_seed"] == 7 and "family-disjoint" in meta["split_method"]
