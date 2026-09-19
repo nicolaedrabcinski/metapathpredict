@@ -84,3 +84,29 @@ def lineage_columns(lineages: dict, taxid: str | int) -> dict[str, str]:
     """{"lineage_phylum": ..., ...} for one genome; unknown ranks are empty strings."""
     lineage = lineage_of(lineages, taxid)
     return {LINEAGE_COLUMNS[rank]: lineage[rank] or "" for rank in RANKS}
+
+
+def parse_lineage_strings(xml: bytes) -> dict[str, str]:
+    """Full lineage string ("cellular organisms; Eukaryota; Sar; ...") of every taxon in an efetch response."""
+    strings: dict[str, str] = {}
+    for taxon in ET.fromstring(xml).findall("Taxon"):
+        text = taxon.findtext("Lineage") or ""
+        strings[taxon.findtext("TaxId")] = text
+        for alias in taxon.findall("AkaTaxIds/TaxId"):
+            strings[alias.text] = text
+    return strings
+
+
+def fetch_full_lineages(taxids: Iterable[str | int], cache_path: str | Path, batch: int = 150, pause: float = 0.5) -> dict[str, str]:
+    """Full lineage strings for `taxids`, cached like fetch_lineages (only missing ids are requested)."""
+    cache_path = Path(cache_path)
+    cache = load_lineages(cache_path)
+    missing = sorted({str(t) for t in taxids} - set(cache))
+    for start in range(0, len(missing), batch):
+        cache.update(parse_lineage_strings(_efetch(missing[start:start + batch])))
+        time.sleep(pause)
+    if missing:
+        tmp = cache_path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(cache))
+        tmp.replace(cache_path)
+    return cache

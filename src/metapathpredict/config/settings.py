@@ -95,6 +95,9 @@ TAXON_TO_SUPERCLASS = {
     "virus": "virus",
     # legacy 3-class datasets
     "eukaryotic": "eukaryote",
+    # protozoa split by eukaryotic supergroup (see metapathpredict.relabel)
+    "protist_alveolata": "eukaryote", "protist_stramenopiles": "eukaryote",
+    "protist_excavata": "eukaryote", "protist_other": "eukaryote",
 }
 
 

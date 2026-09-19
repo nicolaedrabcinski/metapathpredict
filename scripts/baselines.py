@@ -64,6 +64,22 @@ def _finish(sink: MLflowSink, out_dir: Path, data_dir: Path, class_names: list[s
     agg = report["aggregated_3class"]
     logger.info(f"TEST accuracy {report['accuracy']:.4f}" + (f", 3-class {agg['accuracy']:.4f}" if agg else ""))
 
+    meta = json.loads((data_dir / "metadata.json").read_text())
+    if "merge_to_original" in meta:  # a relabelled dataset: also score it in the classes it was made from
+        merge = np.asarray(meta["merge_to_original"])
+        original = meta["original_class_names"]
+        merged = _evaluation_report(original, merge[targets], merge[preds])
+        (out_dir / "test_merged.json").write_text(json.dumps(merged, indent=2))
+        np.save(out_dir / "test_predictions_merged.npy", merge[preds].astype(np.int8))  # original class ids
+        sink.log_metrics(_report_to_metrics(merged, "test/baseline_merged"))
+        merged_genome = evaluate_by_genome(data_dir, merge[targets], merge[preds], original)
+        if merged_genome:
+            (out_dir / "test_merged_genomes.json").write_text(json.dumps(merged_genome, indent=2))
+            sink.log_metrics(genome_report_to_metrics(merged_genome, "test/baseline_merged"))
+        m3 = merged["aggregated_3class"]
+        logger.info(f"TEST merged back to {len(original)} original classes: accuracy {merged['accuracy']:.4f}"
+                    + (f", 3-class {m3['accuracy']:.4f}" if m3 else ""))
+
 
 def run_kmer(args, data_dir: Path, class_names: list[str]) -> None:
     from sklearn.ensemble import HistGradientBoostingClassifier
