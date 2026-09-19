@@ -144,6 +144,8 @@ data/weights/
 data/output/
 data/datasets/
 data/input/
+data/genomes/
+data/holdout/
 logs/
 
 # Hydra experiment runs (checkpoints + logs, regenerate via scripts/run_experiment.py)

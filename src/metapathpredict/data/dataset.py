@@ -4,6 +4,7 @@ PyTorch Dataset classes for sequence data.
 
 from __future__ import annotations
 
+import json
 import random
 from pathlib import Path
 from typing import Callable, Sequence
@@ -266,7 +267,15 @@ class HDF5SequenceDataset(Dataset):
     @property
     def num_classes(self) -> int:
         """Get number of classes from metadata."""
-        return self.metadata.get("num_classes", 3)
+        return int(self.metadata.get("num_classes", 3))
+
+    @property
+    def class_names(self) -> list[str]:
+        """Class names stored in the HDF5 attrs (falls back to the legacy 3 classes)."""
+        raw = self.metadata.get("class_names")
+        if raw is None:
+            return ["bacteria", "eukaryotic", "virus"]
+        return json.loads(raw if isinstance(raw, str) else raw.decode())
     
     def get_class_weights(self) -> Tensor:
         """
@@ -335,7 +344,14 @@ class InMemoryHDF5Dataset(Dataset):
 
     @property
     def num_classes(self) -> int:
-        return self.metadata.get("num_classes", 3)
+        return int(self.metadata.get("num_classes", 3))
+
+    @property
+    def class_names(self) -> list[str]:
+        raw = self.metadata.get("class_names")
+        if raw is None:
+            return ["bacteria", "eukaryotic", "virus"]
+        return json.loads(raw if isinstance(raw, str) else raw.decode())
     
     def get_class_distribution(self) -> dict[int, int]:
         """Get class distribution."""

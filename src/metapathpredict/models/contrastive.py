@@ -81,6 +81,7 @@ class ContrastiveEncoder(BaseModel):
         projection_dim: int = 128,
         hidden_dim: int = 256,
         base_channels: int = 64,
+        num_classes: int = 3,
     ):
         """
         Initialize contrastive encoder.
@@ -91,8 +92,11 @@ class ContrastiveEncoder(BaseModel):
             projection_dim: Projection head output dimension.
             hidden_dim: Projection head hidden dimension.
             base_channels: Base channels for backbone.
+            num_classes: Outputs of the backbone's classifier head (fit as a linear
+                probe after pretraining; the contrastive loss itself never uses it).
         """
         super().__init__()
+        self.num_classes = num_classes
 
         logger.info(
             f"Building ContrastiveEncoder: backbone={backbone}, "
@@ -103,7 +107,7 @@ class ContrastiveEncoder(BaseModel):
         # Backbone encoder (without classifier)
         self.encoder = ConfigurableCNN(
             in_channels=in_channels,
-            num_classes=3,  # Dummy, we use embeddings
+            num_classes=num_classes,
             kernel_preset=backbone,
             base_channels=base_channels,
         )

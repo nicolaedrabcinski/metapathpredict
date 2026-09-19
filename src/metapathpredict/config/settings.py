@@ -70,6 +70,40 @@ CLASS_TO_IDX = {name: idx for idx, name in enumerate(CLASS_NAMES)}
 IDX_TO_CLASS = {idx: name for name, idx in CLASS_TO_IDX.items()}
 NUM_CLASSES = 3
 
+# Fine-grained taxonomic classes used when a dataset is prepared from a genome
+# manifest (scripts/download_diverse_genomes.py), and how they roll up into the
+# three coarse classes that other tools (DeepMicroClass, Tiara) and the API report.
+TAXON_CLASSES = [
+    "bacteria", "archaea", "fungi", "protozoa", "plant", "invertebrate", "vertebrate", "virus",
+]
+NCBI_GROUP_TO_TAXON = {
+    "bacteria": "bacteria",
+    "archaea": "archaea",
+    "fungi": "fungi",
+    "protozoa": "protozoa",
+    "plant": "plant",
+    "invertebrate": "invertebrate",
+    "vertebrate_other": "vertebrate",
+    "vertebrate_mammalian": "vertebrate",
+    "viral": "virus",
+}
+SUPERCLASSES = ["prokaryote", "eukaryote", "virus"]
+TAXON_TO_SUPERCLASS = {
+    "bacteria": "prokaryote", "archaea": "prokaryote",
+    "fungi": "eukaryote", "protozoa": "eukaryote", "plant": "eukaryote",
+    "invertebrate": "eukaryote", "vertebrate": "eukaryote",
+    "virus": "virus",
+    # legacy 3-class datasets
+    "eukaryotic": "eukaryote",
+}
+
+
+def superclass_index_map(class_names: list[str]) -> list[int] | None:
+    """Map each class index to its prokaryote/eukaryote/virus index, or None if a name has no mapping."""
+    if not all(name in TAXON_TO_SUPERCLASS for name in class_names):
+        return None
+    return [SUPERCLASSES.index(TAXON_TO_SUPERCLASS[name]) for name in class_names]
+
 
 class PathConfig(BaseModel):
     """Configuration for file and directory paths."""
@@ -302,6 +336,10 @@ class ContrastiveConfig(BaseModel):
     learning_rate: float = Field(default=1e-3, gt=0)
     weight_decay: float = Field(default=1e-4, ge=0)
     batch_size: int = Field(default=128, ge=1)
+    early_stopping_patience: int = Field(
+        default=3, ge=0,
+        description="Stop if val loss doesn't improve for this many epochs. 0 disables it.",
+    )
 
 
 class RLConfig(BaseModel):
@@ -331,6 +369,10 @@ class RLConfig(BaseModel):
     learning_rate: float = Field(default=1e-4, gt=0)
     weight_decay: float = Field(default=1e-4, ge=0)
     gamma: float = Field(default=0.99, ge=0, le=1.0)
+    early_stopping_patience: int = Field(
+        default=3, ge=0,
+        description="Stop if val accuracy doesn't improve for this many epochs. 0 disables it.",
+    )
 
     # DQN-specific
     epsilon_start: float = Field(default=1.0, ge=0, le=1.0)

@@ -19,10 +19,11 @@ contrastive:
   temperature: 0.07
   mutation_rate: 0.3
   mask_rate: 0.3
-  num_epochs: 3
+  num_epochs: 15
   learning_rate: 0.0001
   weight_decay: 0.0001
   batch_size: 2048
+  early_stopping_patience: 3
 
 scheduler:
   name: cosine
@@ -36,11 +37,12 @@ rl:
   reward_correct: 1.0
   reward_incorrect: -0.5
   reward_uncertain: -0.1
-  num_epochs: 5
-  episodes_per_epoch: 4000
+  num_epochs: 15
+  episodes_per_epoch: 16000
   learning_rate: 0.0001
   weight_decay: 0.0001
   gamma: 0.99
+  early_stopping_patience: 3
   epsilon_start: 1.0
   epsilon_end: 0.05
   epsilon_decay_epochs: 5
@@ -55,7 +57,7 @@ experiment_name: "gpu-training"
 paths:
   base_dir: "."
   data_dir: "data"
-  datasets_dir: "data/datasets/unified_medium"
-  weights_dir: "data/weights/unified_medium"
+  datasets_dir: "data/datasets/taxa8"
+  weights_dir: "data/weights/taxa8"
   predictions_dir: "data/output/predictions"
   logs_dir: "logs"

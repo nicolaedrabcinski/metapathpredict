@@ -32,6 +32,36 @@ def setup_device(args: argparse.Namespace) -> torch.device:
         return torch.device("cpu")
 
 
+class EarlyStopping:
+    """
+    Stops a training loop once a validation metric hasn't improved for
+    `patience` epochs, rather than always running the configured epoch count.
+    """
+
+    def __init__(self, patience: int, mode: str = "min", min_delta: float = 1e-4):
+        self.patience = patience
+        self.mode = mode
+        self.min_delta = min_delta
+        self.best = float("inf") if mode == "min" else float("-inf")
+        self.counter = 0
+
+    def step(self, value: float) -> bool:
+        """Record this epoch's value; return True if training should stop now."""
+        if self.patience <= 0:
+            return False
+        improved = (
+            value < self.best - self.min_delta
+            if self.mode == "min"
+            else value > self.best + self.min_delta
+        )
+        if improved:
+            self.best = value
+            self.counter = 0
+        else:
+            self.counter += 1
+        return self.counter >= self.patience
+
+
 def train_command(args: argparse.Namespace) -> int:
     """Train a model using the specified pipeline."""
     from metapathpredict.config import Settings
@@ -51,6 +81,14 @@ def train_command(args: argparse.Namespace) -> int:
     if args.learning_rate:
         settings.training.learning_rate = args.learning_rate
 
+    # Cap CPU thread usage (torch intra-op parallelism + DataLoader workers)
+    # regardless of how many cores are available on the box.
+    max_threads = 4
+    torch.set_num_threads(max_threads)
+    if settings.data.num_workers > max_threads:
+        logger.info(f"Capping data.num_workers {settings.data.num_workers} -> {max_threads}")
+        settings.data.num_workers = max_threads
+
     device = setup_device(args)
     logger.info(f"Training on {device}")
     logger.info(f"Config: {args.config or 'default'}")
@@ -58,6 +96,10 @@ def train_command(args: argparse.Namespace) -> int:
 
     logger.info("Loading datasets...")
     data_module = SequenceDataModule.from_config(settings)
+    # The dataset (HDF5 attrs written by `prepare`) decides the label space.
+    settings.model.num_classes = getattr(data_module.train_dataset, "num_classes", 3)
+    settings.data.class_names = list(getattr(data_module.train_dataset, "class_names", settings.data.class_names))
+    logger.info(f"Classes ({settings.model.num_classes}): {settings.data.class_names}")
     logger.info(
         f"Datasets loaded: train={len(data_module.train_dataset)}, "
         f"val={len(data_module.val_dataset)}, "
@@ -189,6 +231,7 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
         projection_dim=cfg.projection_dim,
         hidden_dim=cfg.hidden_dim,
         base_channels=cfg.base_channels,
+        num_classes=settings.model.num_classes,
     )
     encoder.to(device)
 
@@ -231,9 +274,12 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
     # or rises; that gap is the standard overfitting signal.
     best_val_loss = float("inf")
     t0_total = time.time()
+    early_stopper = EarlyStopping(patience=cfg.early_stopping_patience, mode="min")
+    last_epoch = 0
 
     epoch_pbar = tqdm(range(cfg.num_epochs), desc="Contrastive Epochs", unit="epoch")
     for epoch in epoch_pbar:
+        last_epoch = epoch
         t0_epoch = time.time()
         loss = trainer.train_epoch(train_loader)
         val_loss = trainer.validate_epoch(val_loader)
@@ -249,6 +295,8 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
                 "loss": loss,
                 "val_loss": val_loss,
                 "config": cfg.model_dump(),
+                "num_classes": settings.model.num_classes,
+                "class_names": settings.data.class_names,
             }, output_dir / "contrastive_best.pt")
             improved = " [BEST - saved]"
 
@@ -265,10 +313,19 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
             f"Time: {elapsed:.1f}s{improved}"
         )
 
+        if early_stopper.step(val_loss):
+            logger.info(
+                f"Early stopping: val loss hasn't improved for "
+                f"{cfg.early_stopping_patience} epochs, stopping at epoch {epoch + 1}/{cfg.num_epochs}"
+            )
+            break
+
     torch.save({
-        "epoch": cfg.num_epochs - 1,
+        "epoch": last_epoch,
         "encoder_state_dict": encoder.state_dict(),
         "config": cfg.model_dump(),
+        "num_classes": settings.model.num_classes,
+        "class_names": settings.data.class_names,
     }, output_dir / "contrastive_final.pt")
 
     # The contrastive objective never touches encoder.encoder.classifier (it only
@@ -338,16 +395,20 @@ def _train_contrastive(settings, device, data_module, output_dir) -> int:
 
     # Re-save both checkpoints with the now-trained classifier head.
     torch.save({
-        "epoch": cfg.num_epochs - 1,
+        "epoch": last_epoch,
         "encoder_state_dict": encoder.state_dict(),
         "val_loss": best_val_loss,
         "probe_val_acc": best_probe_val_acc,
         "config": cfg.model_dump(),
+        "num_classes": settings.model.num_classes,
+        "class_names": settings.data.class_names,
     }, output_dir / "contrastive_best.pt")
     torch.save({
-        "epoch": cfg.num_epochs - 1,
+        "epoch": last_epoch,
         "encoder_state_dict": encoder.state_dict(),
         "config": cfg.model_dump(),
+        "num_classes": settings.model.num_classes,
+        "class_names": settings.data.class_names,
     }, output_dir / "contrastive_final.pt")
 
     total_time = time.time() - t0_total
@@ -402,7 +463,7 @@ def _train_rl(settings, device, data_module, output_dir,
     # Class distribution. Read the labels array directly when backed by HDF5
     # (like HDF5SequenceDataset.get_class_weights does) instead of paying for
     # a full sequence read per sample just to look at its label.
-    class_names = ["bacteria", "eukaryotic", "virus"]
+    class_names = settings.data.class_names
     if hasattr(train_dataset, "hdf5_path") and hasattr(train_dataset, "labels_key"):
         import h5py
         with h5py.File(train_dataset.hdf5_path, "r") as f:
@@ -517,9 +578,12 @@ def _train_rl(settings, device, data_module, output_dir,
     logger.info(f"Starting RL training: {cfg.num_epochs} epochs x {cfg.episodes_per_epoch} episodes...")
     best_val_accuracy = 0.0
     t0_total = time.time()
+    early_stopper = EarlyStopping(patience=cfg.early_stopping_patience, mode="max")
+    last_epoch = 0
 
     epoch_pbar = tqdm(range(cfg.num_epochs), desc="RL Training", unit="epoch")
     for epoch in epoch_pbar:
+        last_epoch = epoch
         t0_epoch = time.time()
 
         # Epsilon decay for DQN
@@ -554,6 +618,8 @@ def _train_rl(settings, device, data_module, output_dir,
                 "config": cfg.model_dump(),
                 "algorithm": cfg.algorithm,
                 "base_channels": settings.contrastive.base_channels,
+                "num_classes": settings.model.num_classes,
+                "class_names": settings.data.class_names,
             }, output_dir / "rl_best.pt")
             improved = " [BEST - saved]"
 
@@ -575,12 +641,21 @@ def _train_rl(settings, device, data_module, output_dir,
             f"Time: {elapsed:.1f}s{improved}"
         )
 
+        if early_stopper.step(val_accuracy):
+            logger.info(
+                f"Early stopping: val accuracy hasn't improved for "
+                f"{cfg.early_stopping_patience} epochs, stopping at epoch {epoch + 1}/{cfg.num_epochs}"
+            )
+            break
+
     torch.save({
-        "epoch": cfg.num_epochs - 1,
+        "epoch": last_epoch,
         "agent_state_dict": agent.state_dict(),
         "config": cfg.model_dump(),
         "algorithm": cfg.algorithm,
         "base_channels": settings.contrastive.base_channels,
+        "num_classes": settings.model.num_classes,
+        "class_names": settings.data.class_names,
     }, output_dir / "rl_final.pt")
 
     total_time = time.time() - t0_total
@@ -698,8 +773,10 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
             projection_dim=config.get("projection_dim", 128),
             hidden_dim=config.get("hidden_dim", 256),
             base_channels=config.get("base_channels", 64),
+            num_classes=ckpt.get("num_classes", 3),
         )
         model.load_state_dict(ckpt["encoder_state_dict"], strict=False)
+        model.class_names = ckpt.get("class_names", ["bacteria", "eukaryotic", "virus"])
         model.to(device).eval()
         return model, "contrastive"
 
@@ -714,12 +791,13 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
 
         model = agent_cls(
             in_channels=4,
-            num_actions=3,
+            num_actions=ckpt.get("num_classes", 3),
             backbone=config.get("backbone", "medium"),
             hidden_dim=config.get("hidden_dim", 256),
             base_channels=ckpt.get("base_channels", 64),
         )
         model.load_state_dict(ckpt["agent_state_dict"], strict=False)
+        model.class_names = ckpt.get("class_names", ["bacteria", "eukaryotic", "virus"])
         model.to(device).eval()
         return model, "rl", algorithm
 
@@ -734,17 +812,8 @@ def _predict_single(model, model_type: str, x: torch.Tensor,
 
     with torch.no_grad():
         if model_type == "contrastive":
-            # Try classifier head on encoder
-            output = model.encoder(x)
-            if output.shape[-1] == 3:
-                probs = F.softmax(output, dim=1).squeeze(0)
-            else:
-                emb = model.get_embeddings(x)
-                if hasattr(model.encoder, "classifier"):
-                    logits = model.encoder.classifier(emb)
-                    probs = F.softmax(logits, dim=1).squeeze(0)
-                else:
-                    probs = torch.tensor([0.34, 0.33, 0.33])
+            # Classifier head fit as a linear probe at the end of contrastive training
+            probs = F.softmax(model.encoder(x), dim=1).squeeze(0)
         else:
             # RL model
             if algorithm == "dqn":
@@ -803,7 +872,7 @@ def predict_command(args: argparse.Namespace) -> int:
     logger.info(f"Loaded {len(sequences)} sequences from {input_path}")
 
     fragment_size = settings.data.default_fragment_size
-    class_names = ["bacteria", "eukaryotic", "virus"]
+    class_names = list(getattr(model, "class_names", ["bacteria", "eukaryotic", "virus"]))
 
     # Make predictions
     output_path = Path(args.output) if args.output else input_path.with_suffix(".predictions.tsv")
@@ -847,8 +916,11 @@ def predict_command(args: argparse.Namespace) -> int:
 
 def _stream_fasta(fasta_path: Path):
     """Yield sequences one at a time from a FASTA file (streaming, low memory)."""
+    import gzip
+
+    opener = gzip.open if str(fasta_path).endswith(".gz") else open
     current_seq = []
-    with open(fasta_path) as f:
+    with opener(fasta_path, "rt") as f:
         for line in f:
             line = line.strip()
             if line.startswith(">"):
@@ -901,6 +973,204 @@ def _assign_sequence_splits(
     return splits
 
 
+class _SplitWriter:
+    """Growable HDF5 (sequences, labels) file with a chunk buffer."""
+
+    def __init__(self, path: Path, sequence_length: int, chunk_size: int, attrs: dict):
+        import h5py
+
+        self.file = h5py.File(path, "w")
+        self.seq = self.file.create_dataset(
+            "sequences", shape=(0, 4, sequence_length), maxshape=(None, 4, sequence_length),
+            dtype="float32", chunks=(min(chunk_size, 1024), 4, sequence_length),
+            compression="gzip", compression_opts=1,
+        )
+        self.lab = self.file.create_dataset(
+            "labels", shape=(0,), maxshape=(None,), dtype="int64",
+            chunks=(min(chunk_size, 4096),), compression="gzip", compression_opts=1,
+        )
+        for key, value in attrs.items():
+            self.file.attrs[key] = value
+        self.chunk_size = chunk_size
+        self.written = 0
+        self._data: list = []
+        self._labels: list = []
+
+    def append(self, arr: np.ndarray, label: int) -> None:
+        self._data.append(arr)
+        self._labels.append(label)
+        if len(self._data) >= self.chunk_size:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._data:
+            return
+        chunk = np.stack(self._data, axis=0).astype(np.float32)
+        n = len(chunk)
+        self.seq.resize(self.written + n, axis=0)
+        self.lab.resize(self.written + n, axis=0)
+        self.seq[self.written : self.written + n] = chunk
+        self.lab[self.written : self.written + n] = np.array(self._labels, dtype=np.int64)
+        self.written += n
+        self._data.clear()
+        self._labels.clear()
+
+    def close(self) -> None:
+        self.flush()
+        self.file.close()
+
+
+def _allocate_quotas(capacities: list[float], total: float) -> list[float]:
+    """Split `total` across genomes as evenly as possible without exceeding any genome's capacity."""
+    quotas = [0.0] * len(capacities)
+    remaining, left = total, len(capacities)
+    for i in sorted(range(len(capacities)), key=lambda i: capacities[i]):
+        quotas[i] = min(capacities[i], remaining / left)
+        remaining -= quotas[i]
+        left -= 1
+    return quotas
+
+
+def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: int, output_dir: Path) -> int:
+    """
+    Build train/val/test HDF5 files from a genome manifest (see
+    scripts/download_diverse_genomes.py): 8 taxonomic classes, split by genome.
+
+    The manifest holds one genome per species, so assigning whole genomes to a
+    split is also a species-level split — no species shows up on both sides.
+    Fragments are sampled uniformly along each genome instead of taken from its
+    first bases, and a genome-level quota keeps one big genome from dominating
+    its class.
+    """
+    import csv
+    import json
+    import time
+
+    from metapathpredict.config.settings import (
+        NCBI_GROUP_TO_TAXON,
+        TAXON_CLASSES,
+        superclass_index_map,
+    )
+    from metapathpredict.data import OneHotEncoder
+
+    manifest_path = Path(args.manifest)
+    root = manifest_path.parent
+    with open(manifest_path) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+
+    by_class: dict[str, list[dict]] = {name: [] for name in TAXON_CLASSES}
+    for row in rows:
+        taxon = NCBI_GROUP_TO_TAXON.get(row["group"])
+        if taxon is not None:
+            by_class[taxon].append(row)
+    missing = [name for name, genomes in by_class.items() if len(genomes) < 3]
+    if missing:
+        logger.error(f"Need at least 3 genomes per class to split by genome; too few for: {missing}")
+        return 1
+
+    ratios = {"train": settings.data.train_ratio, "val": settings.data.val_ratio, "test": settings.data.test_ratio}
+    split_names = tuple(ratios)
+    per_class = args.fragments_per_class
+    rng = np.random.RandomState(42)
+    encoder = OneHotEncoder()
+    attrs = {
+        "num_classes": len(TAXON_CLASSES),
+        "class_names": json.dumps(TAXON_CLASSES),
+        "sequence_length": sequence_length,
+    }
+    writers = {
+        s: _SplitWriter(output_dir / f"encoded_{s}_{sequence_length}.hdf5", sequence_length, args.chunk_size, attrs)
+        for s in split_names
+    }
+    test_fasta = open(output_dir / "test_fragments.fasta", "w")
+    assignments: list[dict] = []
+    counts = {name: {s: 0 for s in split_names} for name in TAXON_CLASSES}
+    t0 = time.time()
+    done = 0
+
+    for label, name in enumerate(TAXON_CLASSES):
+        genomes = sorted(by_class[name], key=lambda r: r["accession"])
+        genome_split = _assign_sequence_splits(
+            len(genomes), ratios["train"], ratios["val"], ratios["test"], rng
+        )
+        for split in split_names:
+            members = [g for g, gs in zip(genomes, genome_split) if gs == split]
+            budget = round(per_class * ratios[split])
+            caps = [float(g["genome_size"]) // sequence_length for g in members]
+            quotas = _allocate_quotas(caps, budget)
+            if sum(caps) < budget:
+                logger.warning(f"  {name}/{split}: only {sum(caps):.0f} windows exist for a budget of {budget}")
+
+            for genome, quota in zip(members, quotas):
+                size = float(genome["genome_size"])
+                taken = 0
+                for seq in _stream_fasta(root / genome["path"]):
+                    n_windows = len(seq) // sequence_length
+                    if n_windows == 0:
+                        continue
+                    expected = quota * len(seq) / size
+                    k = min(n_windows, int(expected) + int(rng.random_sample() < expected - int(expected)))
+                    for w in rng.choice(n_windows, size=k, replace=False) if k else []:
+                        frag = seq[w * sequence_length : (w + 1) * sequence_length].upper()
+                        valid = sum(frag.count(c) for c in "ACGT")
+                        if valid < 0.9 * sequence_length:
+                            continue
+                        writers[split].append(encoder.encode(frag).T, label)
+                        if split == "test":
+                            test_fasta.write(f">{name}_{counts[name][split]}|label={label}|acc={genome['accession']}\n{frag}\n")
+                        counts[name][split] += 1
+                        taken += 1
+                assignments.append({
+                    "accession": genome["accession"], "class": name, "split": split,
+                    "species_taxid": genome["species_taxid"], "organism": genome["organism"],
+                    "fragments": taken,
+                })
+                done += 1
+                if done % 25 == 0:
+                    logger.info(f"  {done}/{len(rows)} genomes, {time.time() - t0:.0f}s")
+        logger.info(f"{name}: " + ", ".join(f"{s}={counts[name][s]}" for s in split_names))
+
+    for w in writers.values():
+        w.close()
+    test_fasta.close()
+
+    # No species may appear in more than one split.
+    species_splits: dict[str, set] = {}
+    for a in assignments:
+        species_splits.setdefault(a["species_taxid"], set()).add(a["split"])
+    shared = [sp for sp, sp_splits in species_splits.items() if len(sp_splits) > 1]
+    if shared:
+        logger.error(f"Species present in more than one split: {shared[:10]}")
+        return 1
+    logger.info(f"Verified: {len(species_splits)} species, none shared across train/val/test")
+
+    with open(output_dir / "split_assignments.tsv", "w") as f:
+        w = csv.DictWriter(f, fieldnames=list(assignments[0]), delimiter="\t")
+        w.writeheader()
+        w.writerows(assignments)
+
+    split_totals = {s: sum(counts[n][s] for n in TAXON_CLASSES) for s in split_names}
+    metadata = {
+        "sequence_length": sequence_length,
+        "num_classes": len(TAXON_CLASSES),
+        "class_names": TAXON_CLASSES,
+        "superclass_of_class": superclass_index_map(TAXON_CLASSES),
+        "train_size": split_totals["train"],
+        "val_size": split_totals["val"],
+        "test_size": split_totals["test"],
+        "fragments": counts,
+        "genomes_per_class_split": {
+            n: {s: sum(1 for a in assignments if a["class"] == n and a["split"] == s) for s in split_names}
+            for n in TAXON_CLASSES
+        },
+        "split_method": "genome-level, one genome per species (species-disjoint)",
+    }
+    with open(output_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f, indent=2)
+    logger.info(f"Dataset prepared in {output_dir}: {split_totals} ({time.time() - t0:.0f}s)")
+    return 0
+
+
 def prepare_command(args: argparse.Namespace) -> int:
     """Prepare dataset from FASTA files (streaming, supports millions of fragments).
 
@@ -926,6 +1196,12 @@ def prepare_command(args: argparse.Namespace) -> int:
 
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.manifest:
+        return _prepare_from_manifest(args, settings, sequence_length, output_dir)
+    if not args.inputs:
+        logger.error("Provide FASTA inputs or --manifest")
+        return 1
 
     # Create preprocessor and encoder
     preprocessor = SequencePreprocessor()
@@ -1157,7 +1433,7 @@ def evaluate_command(args: argparse.Namespace) -> int:
         num_workers=4,
     )
 
-    class_names = ["bacteria", "eukaryotic", "virus"]
+    class_names = list(getattr(model, "class_names", test_dataset.class_names))
     all_preds = []
     all_targets = []
 
@@ -1179,12 +1455,36 @@ def evaluate_command(args: argparse.Namespace) -> int:
 
     print(f"\nAccuracy: {accuracy:.4f}")
 
+    label_ids = list(range(len(class_names)))
+    report_kwargs = dict(labels=label_ids, target_names=class_names, zero_division=0)
+
     print("\nClassification Report:")
-    print(classification_report(all_targets, all_preds, target_names=class_names))
+    print(classification_report(all_targets, all_preds, **report_kwargs))
 
     print("\nConfusion Matrix:")
-    cm = confusion_matrix(all_targets, all_preds)
+    cm = confusion_matrix(all_targets, all_preds, labels=label_ids)
     print(cm)
+
+    # Roll fine-grained classes up to prokaryote/eukaryote/virus — the level
+    # other tools (DeepMicroClass, Tiara) report at, so results are comparable.
+    from metapathpredict.config.settings import SUPERCLASSES, superclass_index_map
+
+    super_results = None
+    super_map = superclass_index_map(class_names)
+    if super_map is not None and len(class_names) != len(SUPERCLASSES):
+        to_super = np.array(super_map)
+        super_targets, super_preds = to_super[all_targets], to_super[all_preds]
+        super_ids = list(range(len(SUPERCLASSES)))
+        super_kwargs = dict(labels=super_ids, target_names=SUPERCLASSES, zero_division=0)
+        print(f"\nAggregated to {SUPERCLASSES}: accuracy {(super_targets == super_preds).mean():.4f}")
+        print(classification_report(super_targets, super_preds, **super_kwargs))
+        print(confusion_matrix(super_targets, super_preds, labels=super_ids))
+        super_results = {
+            "accuracy": float((super_targets == super_preds).mean()),
+            "classification_report": classification_report(
+                super_targets, super_preds, output_dict=True, **super_kwargs
+            ),
+        }
 
     if args.output:
         output_path = Path(args.output)
@@ -1192,10 +1492,9 @@ def evaluate_command(args: argparse.Namespace) -> int:
             "accuracy": float(accuracy),
             "confusion_matrix": cm.tolist(),
             "classification_report": classification_report(
-                all_targets, all_preds,
-                target_names=class_names,
-                output_dict=True,
+                all_targets, all_preds, output_dict=True, **report_kwargs
             ),
+            "aggregated_3class": super_results,
         }
         with open(output_path, "w") as f:
             json.dump(eval_results, f, indent=2)
@@ -1247,7 +1546,11 @@ def main() -> int:
     
     # Prepare command
     prepare_parser = subparsers.add_parser("prepare", help="Prepare dataset")
-    prepare_parser.add_argument("inputs", nargs="+", help="Input FASTA files")
+    prepare_parser.add_argument("inputs", nargs="*", help="Input FASTA files (omit when using --manifest)")
+    prepare_parser.add_argument("--manifest", help="Genome manifest TSV from scripts/download_diverse_genomes.py "
+                                "(8 taxonomic classes, split by genome/species)")
+    prepare_parser.add_argument("--fragments-per-class", type=int, default=30000,
+                                help="With --manifest: target fragments per class across all splits")
     prepare_parser.add_argument("--output", "-o", required=True, help="Output directory")
     prepare_parser.add_argument("--config", "-c", help="Path to config file")
     prepare_parser.add_argument("--length", "-l", type=int, help="Sequence length")
