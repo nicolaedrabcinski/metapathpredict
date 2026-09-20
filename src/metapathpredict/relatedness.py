@@ -88,6 +88,20 @@ def fragment_genomes(dataset_dir: str | Path, split: str) -> np.ndarray:
     return np.repeat([row["accession"] for row in rows], [int(row["fragments"]) for row in rows])
 
 
+def genome_balanced_weights(dataset_dir: str | Path, split: str = "train") -> np.ndarray:
+    """
+    Per-fragment sample weight, `1 / (fragments from that genome)`, so a `WeightedRandomSampler` built
+    from these gives every genome the same expected representation per epoch instead of every fragment.
+
+    Without this, a big genome (more fragments extracted from it) dominates gradient updates over a
+    small one of the same class purely by size - the unit that matters for generalisation is the
+    genome, not the fragment (metapathpredict.genome_eval evaluates the same way, for the same reason).
+    """
+    genomes = fragment_genomes(dataset_dir, split)
+    _, inverse, counts = np.unique(genomes, return_inverse=True, return_counts=True)
+    return 1.0 / counts[inverse]
+
+
 def lineage_targets(dataset_dir: str | Path, split: str, rank: str, names: list[str] | None = None) -> tuple[np.ndarray, list[str]]:
     """
     Taxonomic label of every fragment of `split` at `rank` (phylum, class, order, family or genus), as class

@@ -128,3 +128,36 @@ def test_lineage_targets_label_every_fragment_and_ignore_unknown_names(tmp_path)
     (tmp_path / "plain" / "split_assignments.tsv").write_text((tmp_path / "plain.tsv").read_text())
     with pytest.raises(ValueError):
         lineage_targets(tmp_path / "plain", "train", "phylum")
+
+
+def test_genome_balanced_weights_are_inverse_fragment_count_per_genome(tmp_path):
+    from metapathpredict.relatedness import genome_balanced_weights
+
+    _write(tmp_path / "split_assignments.tsv", [
+        {**_row("big", "bacteria", "train"), "fragments": 100},
+        {**_row("small", "bacteria", "train"), "fragments": 10},
+        {**_row("other_split", "bacteria", "test"), "fragments": 5},
+    ])
+    import numpy as np
+
+    weights = genome_balanced_weights(tmp_path, "train")
+    assert len(weights) == 110
+    assert np.allclose(weights[:100], 0.01) and np.allclose(weights[100:], 0.1)
+    # every genome's fragments sum to the same total weight regardless of how many fragments it has
+    assert weights[:100].sum() == pytest.approx(weights[100:].sum())
+
+
+def test_genome_balanced_weights_build_a_valid_weighted_sampler(tmp_path):
+    import torch
+
+    from metapathpredict.relatedness import genome_balanced_weights
+
+    _write(tmp_path / "split_assignments.tsv", [
+        {**_row("big", "bacteria", "train"), "fragments": 100},
+        {**_row("small", "bacteria", "train"), "fragments": 10},
+    ])
+    weights = genome_balanced_weights(tmp_path, "train")
+    sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples=100000, replacement=True)
+    drawn = torch.tensor(list(sampler))
+    from_small = (drawn >= 100).float().mean().item()
+    assert 0.4 < from_small < 0.6  # each genome ~half the draws despite the 10x size difference

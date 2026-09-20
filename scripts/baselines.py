@@ -133,7 +133,16 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
         splits["train"] = WithAuxTargets(splits["train"], aux)
         logger.info(f"Auxiliary task: {args.aux_rank} of the genome, {len(aux_names)} classes, "
                     f"{int((aux == -100).sum())} of {len(aux)} training fragments unlabelled")
-    train_loader = DataLoader(splits["train"], batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=0)
+    if args.genome_balanced:
+        from metapathpredict.relatedness import genome_balanced_weights
+
+        weights = genome_balanced_weights(data_dir, "train")
+        sampler = torch.utils.data.WeightedRandomSampler(weights, num_samples=len(weights), replacement=True)
+        logger.info(f"Genome-balanced sampling: {len(weights)} fragments, weights span "
+                    f"{weights.min():.2e} - {weights.max():.2e} (bigger genome -> lower per-fragment weight)")
+        train_loader = DataLoader(splits["train"], batch_size=args.batch_size, sampler=sampler, drop_last=True, num_workers=0)
+    else:
+        train_loader = DataLoader(splits["train"], batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=0)
     val_loader = DataLoader(splits["val"], batch_size=512, shuffle=False, num_workers=0)
     test_loader = DataLoader(splits["test"], batch_size=512, shuffle=False, num_workers=0)
 
@@ -155,6 +164,7 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
                          "seed": args.seed, "mutation_rate": args.mutation_rate, "mask_rate": args.mask_rate,
                          "init_from": args.init_from or "scratch", "lr_schedule": args.lr_schedule,
                          "aux_rank": args.aux_rank or "none", "aux_weight": args.aux_weight,
+                         "genome_balanced": args.genome_balanced,
                          "dataset": str(data_dir)})
         start = time.time()
         fit = train_supervised(model, train_loader, val_loader, device, epochs=args.epochs, patience=args.patience,
@@ -209,6 +219,9 @@ def main() -> None:
     sup.add_argument("--aux-rank", choices=["phylum", "class", "order", "family", "genus"],
                      help="auxiliary head predicting the taxonomic rank of the genome (needs lineage columns)")
     sup.add_argument("--aux-weight", type=float, default=0.3, help="weight of the auxiliary loss")
+    sup.add_argument("--genome-balanced", action="store_true",
+                     help="sample training fragments so every genome has equal expected weight per epoch, "
+                     "instead of every fragment (a big genome no longer dominates a small one of the same class)")
     sup.add_argument("--save-checkpoint", action="store_true", help="also save the weights as model.pt")
     sup.add_argument("--mutation-rate", type=float, default=0.3, help="augment=full")
     sup.add_argument("--mask-rate", type=float, default=0.3, help="augment=full")
