@@ -1,161 +1,62 @@
 # Training Approaches Overview
 
-MetaPathPredict offers three distinct training approaches, each suited for different scenarios.
+MetaPathPredict trains a classifier for 500 bp DNA fragments into 8 taxonomic classes (bacteria,
+archaea, fungi, protozoa, plant, invertebrate, vertebrate, virus; rolled up to
+prokaryote/eukaryote/virus). Two approaches are implemented and actively used; a third
+(`Configurable CNN` trained directly with cross-entropy, no contrastive step) turned out to be the
+strongest of the three in our own measurements — see the numbers below before picking one.
 
 ## Comparison
 
-| Approach | Best For | Labeled Data | Training Time | Complexity |
-|----------|----------|--------------|---------------|------------|
-| **Configurable CNN** | Standard classification | Required | Fast | Low |
-| **Contrastive Learning** | Limited labels | Optional | Medium | Medium |
-| **Reinforcement Learning** | Custom rewards | Required | Slow | High |
+| Approach | What it is | Labeled data | Current standing |
+|----------|------------|---------------|-------------------|
+| **Plain CNN** (`scripts/baselines.py supervised`) | `ConfigurableCNN` trained end-to-end with cross-entropy | Required | Currently our best recipe; see `benchmarks/README.md` |
+| **Contrastive pretraining** (`metapathpredict train --pipeline contrastive`) | Self-supervised NT-Xent/SupCon pretraining of `ContrastiveEncoder`, then a linear probe | Only for the probe | Has not beaten the plain CNN on this task so far |
+| **RL fine-tuning** (`metapathpredict train --pipeline rl`) | An actor-critic agent fine-tuned from a contrastive encoder; the task is a one-step contextual bandit (one fragment, one action, one reward), not a multi-step RL problem | Required | Has not beaten the contrastive probe or the plain CNN in any run so far |
 
-## 1. Configurable CNN
+## 1. Plain CNN (cross-entropy)
 
-Traditional supervised learning with adjustable kernel sizes.
-
-```python
-from metapathpredict.models import ConfigurableCNN
-
-model = ConfigurableCNN(
-    kernel_preset="medium",  # 5, 7, or 10
-    num_classes=3,
-)
+```bash
+python scripts/baselines.py supervised --augment rc --rc-share mean --save-checkpoint
 ```
 
-**Key Features:**
-
-- 🎯 Kernel size presets (5, 7, 10) for different pattern scales
-- ⚡ Fast training with standard cross-entropy loss
-- 📊 Easy to interpret and debug
-
-**When to Use:**
-
-- You have sufficient labeled data
-- You need fast iteration and experimentation
-- You want interpretable models
+`ConfigurableCNN` (kernel presets `small`/`medium`/`large`/`progressive`/`multi`), trained directly
+with cross-entropy. `--rc-share mean` shares weights between a sequence and its reverse complement
+(the one architecture change that has reliably helped, see `benchmarks/README.md`).
 
 [Learn more →](cnn.md)
 
 ## 2. Contrastive Learning
 
-Self-supervised pretraining followed by fine-tuning.
-
-```python
-from metapathpredict.models import ContrastiveModel
-
-model = ContrastiveModel(
-    encoder=base_encoder,
-    projection_dim=128,
-    temperature=0.5,
-)
+```bash
+metapathpredict train --pipeline contrastive --config configs/train_gpu.yaml
 ```
 
-**Key Features:**
-
-- 🔄 SimCLR and SupCon implementations
-- 🎨 Data augmentation (crop, mask, noise)
-- 📈 Transfer learning friendly
-
-**When to Use:**
-
-- Limited labeled data but lots of unlabeled sequences
-- You want to learn general sequence representations
-- Transfer learning scenarios
+`ContrastiveEncoder` + `NTXentLoss`/`SupConLoss` (`metapathpredict.models.contrastive`), pretrained
+without labels, then a linear probe (`metapathpredict.probe`) fit on the frozen encoder. Useful when
+labeled data is scarce relative to unlabeled sequence; on our current dataset size it has not
+outperformed training the same CNN directly on the labels.
 
 [Learn more →](contrastive.md)
 
 ## 3. Deep Reinforcement Learning
 
-Treat classification as a sequential decision problem.
-
-```python
-from metapathpredict.models import DQNAgent, PolicyGradientAgent
-
-agent = PolicyGradientAgent(
-    state_dim=128,
-    action_dim=3,
-)
+```bash
+metapathpredict train --pipeline rl --config configs/train_gpu.yaml
 ```
 
-**Key Features:**
-
-- 🎮 DQN, Policy Gradient, Actor-Critic
-- 🎯 Custom reward functions
-- 🔍 Exploration-exploitation balance
-
-**When to Use:**
-
-- Custom reward functions needed
-- Sequential decision-making scenarios
-- Research and experimentation
+DQN, Policy Gradient or Actor-Critic (`metapathpredict.models.reinforcement`), fine-tuned from a
+contrastive encoder checkpoint. Because the task has no real multi-step structure (one fragment, one
+decision, no dependence on earlier decisions), most of what distinguishes RL from a classifier —
+exploration, credit assignment across steps, planning — has nothing to act on here; treat it as an
+experiment, not the default choice.
 
 [Learn more →](reinforcement.md)
 
-## Architecture Diagram
+## Current numbers
 
-```mermaid
-graph TD
-    A[Input Sequence] --> B[One-Hot Encoding]
-    
-    subgraph "Approach 1: CNN"
-        B --> C1[Conv1D k=5/7/10]
-        C1 --> D1[Pooling]
-        D1 --> E1[Classifier]
-    end
-    
-    subgraph "Approach 2: Contrastive"
-        B --> C2[Encoder]
-        C2 --> D2[Projection Head]
-        D2 --> E2[NT-Xent Loss]
-        E2 --> F2[Fine-tune Classifier]
-    end
-    
-    subgraph "Approach 3: RL"
-        B --> C3[Feature Extractor]
-        C3 --> D3[Policy Network]
-        D3 --> E3[Action Selection]
-        E3 --> F3[Reward Signal]
-    end
-    
-    E1 --> G[Prediction]
-    F2 --> G
-    E3 --> G
-```
-
-## Choosing an Approach
-
-### Decision Tree
-
-```
-Do you have labeled data?
-├── Yes
-│   └── Is it abundant (>10k samples)?
-│       ├── Yes → Configurable CNN
-│       └── No → Contrastive Learning (pretrain + fine-tune)
-└── No
-    └── Do you have unlabeled data?
-        ├── Yes → Contrastive Learning (self-supervised)
-        └── No → Collect more data
-        
-Do you need custom reward functions?
-└── Yes → Reinforcement Learning
-```
-
-### Performance Comparison
-
-On our benchmark dataset (60k sequences, 3 classes):
-
-| Approach | Accuracy | F1-Score | Training Time |
-|----------|----------|----------|---------------|
-| CNN (k=5) | 94.2% | 0.941 | 15 min |
-| CNN (k=7) | 95.1% | 0.950 | 18 min |
-| CNN (k=10) | 94.8% | 0.946 | 22 min |
-| Contrastive | 95.8% | 0.957 | 45 min |
-| RL (REINFORCE) | 93.5% | 0.932 | 120 min |
-
-## Next Steps
-
-- [Configurable CNN](cnn.md) - Deep dive into CNN architecture
-- [Contrastive Learning](contrastive.md) - Self-supervised pretraining
-- [Reinforcement Learning](reinforcement.md) - RL-based classification
+See `benchmarks/README.md` for the actual, genome-level-bootstrapped results on the current
+family-disjoint test split, and `BACKLOG.md` for the full log of what was tried and what did or did
+not help. Do not treat performance tables elsewhere in this `training-approaches/` section as
+measured results unless they cite a run — some of the per-approach pages predate the current
+evaluation protocol and still carry illustrative, unverified numbers.

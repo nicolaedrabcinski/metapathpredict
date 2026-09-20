@@ -27,4 +27,16 @@ not assumed.
 The RL phase here is a contextual bandit (one fragment, one answer, one reward), so most of that list
 (DQN, TRPO/PPO, exploration, hierarchy, memory, model-based) does not apply. What does: variance and
 seeds ("Deep RL that Matters"), sampling hard examples more often (prioritized replay), and reward
-shaping as the one thing RL can do that cross-entropy cannot.
+shaping as the one thing RL can do that cross-entropy cannot. In practice a plain cross-entropy CNN
+has consistently matched or beaten the contrastive+RL pipeline on this task — see `benchmarks/README.md`.
+
+## Architecture and taxonomic classification (added while investigating why RC-share and virus
+## diversity helped; abstracts only, not read in full — see `BACKLOG.md` for what was checked)
+
+| Paper | What it says | Where it matters here |
+|---|---|---|
+| [VirHunter](https://www.frontiersin.org/articles/10.3389/fbinf.2022.867111/full) (Sukhorukov et al. 2022) | Three CNNs (k=5,7,10) + a shallow random forest stacker; global max-pooling; bacteriophage fragments get misclassified as bacteria in their leave-one-family-out setting too. | Motivated `scripts/stacking_eval.py` (the stacker did not beat plain averaging here) and the pooling sweep (max/avg+max did not beat mean pooling here either). |
+| [Caduceus](https://arxiv.org/abs/2403.03234) (Schiff et al.) | A DNA state-space model built to be reverse-complement equivariant by construction. | Matches our `RCShare` finding (shared weights for a sequence and its reverse complement): +1.8pp, the one architecture change this session that reliably helped. |
+| [ConvNova](https://arxiv.org/abs/2502.18538) | Argues CNNs remain competitive with transformers/SSMs on DNA foundation-model benchmarks when using dilated and gated convolutions; our backbone uses neither. | Candidate next architecture change — `ConvBlock` already accepts a `dilation` parameter, unused by `ConfigurableCNN`. |
+| [TaxDistill](https://arxiv.org/abs/2605.28868) | Distilling soft labels from a 500M-parameter genomic foundation model (GenomeOcean) into a small student raised F1 from 0.763 to 0.941 on CAMI2 metagenomic taxonomy. | Not tried; would need access to a pretrained genomic foundation model. |
+| [Metaxa](https://www.biorxiv.org/content/10.64898/2026.04.20.719780v1.full) (2026, long-read Nanopore) | A transformer classifier generalizes to out-of-sample (novel) organisms better than Kraken2/MetageNN at genus level. | Consistent with our own finding (`scripts/novelty_distance.py`): accuracy falls off sharply with sequence distance to the nearest training genome. |
