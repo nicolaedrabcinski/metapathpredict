@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from metapathpredict.api.routers import samples, predictions, attribution, health
+from metapathpredict.api.routers import samples, predictions, health
 
 
 def create_app() -> FastAPI:
@@ -33,7 +33,6 @@ def create_app() -> FastAPI:
     app.include_router(health.router, tags=["Health"])
     app.include_router(samples.router, prefix="/api/samples", tags=["Samples"])
     app.include_router(predictions.router, prefix="/api/predictions", tags=["Predictions"])
-    app.include_router(attribution.router, prefix="/api/attribution", tags=["Attribution"])
 
     # Serve static files (React build) if available
     static_dir = Path(__file__).parent.parent.parent.parent / "static"

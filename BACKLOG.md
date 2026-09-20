@@ -4,7 +4,26 @@
 Что уже известно: CE-CNN ≈ 62% (разброс seed ±0,8), бустинг на 4-мерах ≈ 55,7%; **добавление вирусных геномов (500→3000)
 подняло recall virus с 15–19% до 52–65% на тех же тестовых геномах, при почти той же общей точности** — см. «Находки»;
 1000 bp даёт +5,5 п.п.; ансамбль из 5 CE-моделей +2,2 п.п.; RC-share (V-3) +1,8 п.п., значимо; при 16–32 фрагментах одного
-генома точность ≈ 82% (симуляция).
+генома точность ≈ 82% (симуляция). **Финальный рецепт (RC-share + 3000 вирусов + ансамбль 3 seed), разбиение 1: 65,6%
+[62,0; 68,7] / 84,1% 3-класса, virus recall 60,9% — +3,0 п.п. [+1,9; +4,0] к одиночной модели того же рецепта, P=1,00.**
+
+## Аудит инфраструктуры (2026-09-20)
+
+| ID | Находка | Статус |
+|---|---|---|
+| A-1 | Чекпойнты `scripts/baselines.py` (ключ `state_dict`) не грузятся `metapathpredict evaluate/predict`/API — `_load_model_from_checkpoint` в `cli.py` понимает только `encoder_state_dict`/`agent_state_dict`. **Ничего, что мы обучили за сессию, не обслуживается штатными командами проекта** | открыто, самое важное |
+| A-2 | API-сервис интерпретации: 3-класс `CLASS_NAMES`, сломанный Grad-CAM (`['branches','fusion','stem']`), не знает про `RCShare`/`pool` | **удалено**: `model_interpreter.py`, `attribution_service.py`, роутер `attribution.py`, схемы `Attribution*`/`Motif*`. Тесты (321) проходят, приложение собирается (3 роутера вместо 4) |
+| A-2a | Фронтенд (`frontend/src/pages/Attribution.tsx`, `AttributionHeatmap.tsx`, ссылки в `App.tsx`/`Predictions.tsx`/`SampleList.tsx`/`SampleDetail.tsx`) теперь дёргает удалённый `/api/attribution/*` (404). Не менялся с первого коммита проекта — уже был нетронутой заготовкой | ждёт решения: удалить или оставить |
+| A-3 | Дублирующий, неиспользуемый учебный пайплайн `src/metapathpredict/training/` (1546 строк: `trainer.py`, `callbacks.py`, `schedulers.py`) со своим `EarlyStopping`, достижим через `train --pipeline supervised` → `UnifiedClassifier`. Ни разу не использовался за сессию | открыто |
+| A-4 | README рекомендует `rl_best.pt` в примерах `predict`/`evaluate`, хотя CE стабильно не хуже RL | открыто |
+| A-5 | Конфликт `pytest.ini` vs `[tool.pytest.ini_options]` в `pyproject.toml` — pytest молча берёт только `pytest.ini`, warning виден в каждом прогоне тестов | открыто, тривиально |
+| A-6 | 25 локальных коммитов не запушены в `origin/main` | открыто, решение пользователя |
+| A-7 | `ruff check` — 1591 замечание (1253 автофикс: пробелы, сортировка импортов, `Optional[X]`→`X\|None`) | открыто, низкий приоритет |
+| A-8 | `benchmarks/README.md`, `docs/references.md`, `docs/training-approaches/overview.md` не отражают ничего из этой сессии (family-split, geNomad, Mash, RC-share, расширение вирусов, 8 классов) | открыто |
+| A-9 | `data/datasets` 12 ГБ, десяток пересекающихся наборов (`taxa8`, `taxa8fam500_s1-3`, `taxa8fam_s1-3` 1000bp, `taxa8vir_fam500_s1-3`, `protist4_fam500_s1-3`) | открыто, не срочно (3,7 ТБ свободно) |
+| A-10 | Статистика: почти все архитектурные сравнения ночи на одном seed (разброс ±0,8–1,5 п.п.); у vertebrate/plant/protozoa в тесте по 5–8 геномов; vertebrate тест слишком близок к train по Mash (Q-9) | открыто, известно |
+
+Секретов/ключей в репозитории не найдено.
 
 ## Ресёрч: внешняя литература (2026-09-20)
 
