@@ -814,6 +814,16 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
         model.class_names = config.get("class_names", ["bacteria", "eukaryotic", "virus"])
         return model, "supervised"
 
+    elif "members" in ckpt:
+        # Several scripts/baselines.py checkpoints averaged into one (scripts/pack_ensemble.py).
+        # model_type stays "supervised": EnsembleClassifier's forward is a drop-in for a single
+        # classifier's, see metapathpredict.baselines.EnsembleClassifier.
+        from metapathpredict.baselines import load_ensemble_checkpoint
+
+        model = load_ensemble_checkpoint(checkpoint_path, device)
+        model.class_names = ckpt.get("class_names") or ["bacteria", "eukaryotic", "virus"]
+        return model, "supervised"
+
     else:
         raise ValueError(f"Unknown checkpoint format: {list(ckpt.keys())}")
 

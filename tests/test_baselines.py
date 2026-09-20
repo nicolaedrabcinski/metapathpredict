@@ -243,3 +243,89 @@ def test_a_strand_sharing_model_trains_and_takes_an_auxiliary_head():
     head = torch.nn.Linear(model._final_channels, 4)
     out = train_supervised(model, loader, val, "cpu", epochs=4, patience=0, lr=3e-3, augment="none", aux_head=head)
     assert out["best_val_acc"] > 0.8
+
+
+# ------------------------------------------------------------------ ensemble checkpoints (Q-1)
+from metapathpredict.baselines import (  # noqa: E402
+    EnsembleClassifier,
+    load_ensemble_checkpoint,
+    save_ensemble_checkpoint,
+)
+
+
+def test_ensemble_averages_softmax_probabilities_not_logits():
+    torch.manual_seed(0)
+    x = _gc_data(n=8)[0]
+    members = [ConfigurableCNN(num_classes=3, kernel_preset="small", base_channels=16).eval() for _ in range(3)]
+    ensemble = EnsembleClassifier(members).eval()
+    with torch.no_grad():
+        expected = torch.stack([torch.softmax(m(x), dim=1) for m in members]).mean(dim=0)
+        got = torch.softmax(ensemble(x), dim=1)  # forward() returns log-probs, softmax undoes the log
+    assert torch.allclose(got, expected, atol=1e-6)
+    assert torch.allclose(got.sum(dim=1), torch.ones(8), atol=1e-5)
+
+
+def test_ensemble_of_one_well_trained_model_reproduces_its_own_accuracy():
+    torch.manual_seed(0)
+    x, y = _gc_data(n=64)
+    good = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16)
+    loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(x, y), batch_size=16)
+    train_supervised(good, loader, loader, "cpu", epochs=15, patience=0, lr=5e-3, augment="none")
+    ensemble = EnsembleClassifier([good]).eval()
+    with torch.no_grad():
+        single_preds = good(x).argmax(dim=1)
+        ensemble_preds = ensemble(x).argmax(dim=1)
+    assert torch.equal(single_preds, ensemble_preds)
+    assert (single_preds == y).float().mean() > 0.85
+
+
+def test_ensemble_of_three_identical_copies_matches_the_shared_accuracy():
+    torch.manual_seed(0)
+    x, y = _gc_data(n=64)
+    good = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16)
+    loader = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(x, y), batch_size=16)
+    train_supervised(good, loader, loader, "cpu", epochs=15, patience=0, lr=5e-3, augment="none")
+    ensemble = EnsembleClassifier([good, good, good]).eval()  # same weights three times: averaging changes nothing
+    with torch.no_grad():
+        assert torch.equal(good(x).argmax(dim=1), ensemble(x).argmax(dim=1))
+
+
+def test_ensemble_requires_at_least_one_member():
+    with pytest.raises(ValueError):
+        EnsembleClassifier([])
+
+
+def test_save_and_load_ensemble_checkpoint_roundtrips(tmp_path):
+    torch.manual_seed(0)
+    x = _gc_data(n=8)[0]
+    members = [ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16).eval() for _ in range(2)]
+    configs = [{"backbone": "small", "base_channels": 16, "num_classes": 2} for _ in members]
+    path = tmp_path / "ensemble.pt"
+    save_ensemble_checkpoint(members, path, configs, class_names=["a", "b"])
+
+    with pytest.raises(ValueError):
+        save_ensemble_checkpoint(members, path, configs[:1])  # mismatched lengths
+
+    loaded = load_ensemble_checkpoint(path)
+    assert isinstance(loaded, EnsembleClassifier) and len(loaded.members) == 2
+    with torch.no_grad():
+        expected = torch.stack([torch.softmax(m(x), dim=1) for m in members]).mean(dim=0)
+        got = torch.softmax(loaded(x), dim=1)
+    assert torch.allclose(got, expected, atol=1e-6)
+
+
+def test_ensemble_checkpoint_loads_through_the_cli_like_a_single_model(tmp_path):
+    from metapathpredict.cli import _load_model_from_checkpoint, _predict_single
+
+    torch.manual_seed(0)
+    x = _gc_data(n=4)[0]
+    members = [build_classifier(3, "small", 16, "batch", "avg", "mean") for _ in range(2)]
+    configs = [{"backbone": "small", "base_channels": 16, "num_classes": 3, "norm": "batch", "pool": "avg", "rc_share": "mean"}
+              for _ in members]
+    path = tmp_path / "ensemble.pt"
+    save_ensemble_checkpoint(members, path, configs, class_names=["bacteria", "archaea", "virus"])
+
+    loaded, model_type = _load_model_from_checkpoint(path, torch.device("cpu"))
+    assert model_type == "supervised" and loaded.class_names == ["bacteria", "archaea", "virus"]
+    class_idx, confidence, probs = _predict_single(loaded, model_type, x[:1])
+    assert len(probs) == 3 and confidence == pytest.approx(max(probs), abs=1e-6)

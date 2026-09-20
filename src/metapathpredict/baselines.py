@@ -142,6 +142,46 @@ def load_supervised_checkpoint(path, device="cpu") -> nn.Module:
     return model.to(device).eval()
 
 
+class EnsembleClassifier(nn.Module):
+    """
+    Several classifiers combined by averaging their softmax probabilities (uniform weight each).
+
+    `forward` returns log(mean of the members' probabilities), not logits: `F.softmax` of that recovers
+    exactly the averaged probabilities (softmax(log p) = p when p already sums to 1), so an ensemble is
+    a drop-in replacement everywhere a single classifier is used — `metapathpredict.cli`, `scripts/baselines.py`
+    evaluation helpers, `scripts/final_ensemble.py` — with no special-casing.
+    """
+
+    def __init__(self, members: list[nn.Module]):
+        super().__init__()
+        if not members:
+            raise ValueError("an ensemble needs at least one member")
+        self.members = nn.ModuleList(members)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        probs = torch.stack([F.softmax(m(x), dim=1) for m in self.members], dim=0).mean(dim=0)
+        return torch.log(probs.clamp_min(1e-12))
+
+
+def save_ensemble_checkpoint(models: list[nn.Module], path, configs: list[dict], class_names: list[str] | None = None) -> None:
+    """Save several `save_supervised_checkpoint`-style models as one ensemble checkpoint (see load_ensemble_checkpoint)."""
+    if len(models) != len(configs):
+        raise ValueError(f"{len(models)} models but {len(configs)} configs")
+    torch.save({"members": [m.state_dict() for m in models], "configs": configs, "class_names": class_names}, path)
+
+
+def load_ensemble_checkpoint(path, device="cpu") -> EnsembleClassifier:
+    """Rebuild the ensemble saved by save_ensemble_checkpoint (or scripts/pack_ensemble.py), in eval mode."""
+    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    members = []
+    for state_dict, config in zip(checkpoint["members"], checkpoint["configs"]):
+        model = build_classifier(config["num_classes"], config["backbone"], config["base_channels"],
+                                 config.get("norm", "batch"), config.get("pool", "avg"), config.get("rc_share", "none"))
+        model.load_state_dict(state_dict)
+        members.append(model)
+    return EnsembleClassifier(members).to(device).eval()
+
+
 def train_supervised(
     model: nn.Module,
     train_loader,
