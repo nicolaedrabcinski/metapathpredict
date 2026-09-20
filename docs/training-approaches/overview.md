@@ -57,6 +57,4 @@ experiment, not the default choice.
 
 See `benchmarks/README.md` for the actual, genome-level-bootstrapped results on the current
 family-disjoint test split, and `BACKLOG.md` for the full log of what was tried and what did or did
-not help. Do not treat performance tables elsewhere in this `training-approaches/` section as
-measured results unless they cite a run — some of the per-approach pages predate the current
-evaluation protocol and still carry illustrative, unverified numbers.
+not help.
