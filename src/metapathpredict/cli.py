@@ -92,14 +92,6 @@ def train_command(args: argparse.Namespace) -> int:
     else:
         settings = Settings()
 
-    # Override with command-line arguments
-    if args.epochs:
-        settings.training.num_epochs = args.epochs
-    if args.batch_size:
-        settings.training.batch_size = args.batch_size
-    if args.learning_rate:
-        settings.training.learning_rate = args.learning_rate
-
     # Cap CPU thread usage (torch intra-op parallelism + DataLoader workers)
     # regardless of how many cores are available on the box.
     _cap_threads(settings, getattr(args, "max_threads", 16))
@@ -124,9 +116,7 @@ def train_command(args: argparse.Namespace) -> int:
 
     pipeline = getattr(args, "pipeline", "full")
 
-    if pipeline == "supervised":
-        return _train_supervised(args, settings, device, data_module, output_dir)
-    elif pipeline == "contrastive":
+    if pipeline == "contrastive":
         return _train_contrastive(settings, device, data_module, output_dir)
     elif pipeline == "rl":
         return _train_rl(settings, device, data_module, output_dir)
@@ -135,77 +125,6 @@ def train_command(args: argparse.Namespace) -> int:
     else:
         logger.error(f"Unknown pipeline: {pipeline}")
         return 1
-
-
-def _train_supervised(args, settings, device, data_module, output_dir) -> int:
-    """Train a supervised CNN model (legacy)."""
-    from metapathpredict.models import UnifiedClassifier, create_cnn_model
-    from metapathpredict.training import (
-        EarlyStopping,
-        MetricsLogger,
-        ModelCheckpoint,
-        ProgressCallback,
-        Trainer,
-        get_scheduler,
-    )
-
-    model_name = getattr(args, "model", "unified")
-    if model_name == "unified":
-        model = UnifiedClassifier(
-            seq_length=settings.data.default_fragment_size,
-            num_classes=settings.model.num_classes,
-        )
-    else:
-        model = create_cnn_model(
-            model_type=model_name,
-            in_channels=4,
-            num_classes=settings.model.num_classes,
-        )
-
-    logger.info(f"Model: {model.__class__.__name__}")
-    logger.info(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
-
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=settings.training.learning_rate,
-        weight_decay=settings.training.weight_decay,
-    )
-
-    scheduler = get_scheduler(
-        name=settings.training.scheduler or "warmup_cosine",
-        optimizer=optimizer,
-        total_epochs=settings.training.num_epochs,
-        warmup_epochs=settings.training.warmup_epochs,
-    )
-
-    callbacks = [
-        ProgressCallback(show_metrics=["accuracy", "f1_macro"]),
-        MetricsLogger(log_dir=output_dir),
-        ModelCheckpoint(save_dir=output_dir, monitor="val_loss", save_top_k=3),
-        EarlyStopping(monitor="val_loss", patience=settings.training.patience),
-    ]
-
-    class_weights = None
-    if settings.training.use_class_weights:
-        class_weights = data_module.get_class_weights(device)
-        logger.info(f"Using computed class weights: {class_weights.tolist()}")
-
-    trainer = Trainer(
-        model=model,
-        train_loader=data_module.train_dataloader(),
-        val_loader=data_module.val_dataloader(),
-        optimizer=optimizer,
-        scheduler=scheduler,
-        config=settings.training,
-        callbacks=callbacks,
-        device=device,
-        class_weights=class_weights,
-    )
-
-    trainer.fit(num_epochs=settings.training.num_epochs)
-    trainer.save_checkpoint(output_dir / "final_model.pt")
-    logger.info(f"Supervised training complete. Model saved to {output_dir}")
-    return 0
 
 
 def _train_contrastive(settings, device, data_module, output_dir, sink: MetricsSink | None = None) -> int:
@@ -1760,14 +1679,8 @@ def main() -> int:
     train_parser = subparsers.add_parser("train", help="Train a model")
     train_parser.add_argument("--config", "-c", help="Path to config file")
     train_parser.add_argument("--pipeline", "-p", default="full",
-                             choices=["full", "contrastive", "rl", "supervised"],
+                             choices=["full", "contrastive", "rl"],
                              help="Training pipeline (default: full = contrastive + RL)")
-    train_parser.add_argument("--model", "-m", default="unified",
-                             choices=["unified", "simple", "multiscale", "residual"],
-                             help="Model architecture (only for supervised pipeline)")
-    train_parser.add_argument("--epochs", "-e", type=int, help="Number of epochs")
-    train_parser.add_argument("--batch-size", "-b", type=int, help="Batch size")
-    train_parser.add_argument("--learning-rate", "-lr", type=float, help="Learning rate")
     train_parser.add_argument("--output", "-o", help="Output directory")
     train_parser.add_argument("--device", help="Device (cuda/cpu)")
     train_parser.add_argument("--max-threads", type=int, default=16,

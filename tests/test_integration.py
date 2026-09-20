@@ -17,7 +17,6 @@ from metapathpredict.models.cnn import MultiScaleCNN
 from metapathpredict.models.configurable_cnn import create_configurable_cnn, KERNEL_PRESETS
 from metapathpredict.models.contrastive import ContrastiveEncoder, NTXentLoss, ContrastiveAugmentation
 from metapathpredict.models.reinforcement import DQNAgent, SequenceEnvironment
-from metapathpredict.training.trainer import Trainer
 
 
 @pytest.fixture
@@ -106,63 +105,6 @@ class TestEndToEndPipeline:
         predicted_classes = torch.argmax(predictions, dim=1)
         assert predicted_classes.shape == (16,)
         assert all(0 <= c < 3 for c in predicted_classes)
-
-    def test_training_pipeline(self, sample_dna_sequences, encoder):
-        """Test complete training pipeline."""
-        sequences, labels = sample_dna_sequences
-        
-        # Prepare data
-        encoded_seqs = []
-        for seq in sequences:
-            # Truncate/pad to 500
-            seq = seq[:500].ljust(500, 'N')
-            enc = encoder.encode(seq)
-            encoded_seqs.append(enc)
-        
-        X = np.stack(encoded_seqs)
-        X = np.transpose(X, (0, 2, 1))
-        y = np.array(labels)
-        
-        # Create tensors
-        X_tensor = torch.from_numpy(X).float()
-        y_tensor = torch.from_numpy(y).long()
-        
-        # Create simple dataset
-        dataset = torch.utils.data.TensorDataset(X_tensor, y_tensor)
-        train_loader = torch.utils.data.DataLoader(dataset, batch_size=8, shuffle=True)
-        val_loader = torch.utils.data.DataLoader(dataset, batch_size=8)
-        
-        # Create model using seq_length parameter
-        model = MultiScaleCNN(
-            seq_length=500,
-            num_classes=3,
-            branch_channels=32,
-        )
-        
-        # Trainer requires train_loader and val_loader
-        trainer = Trainer(
-            model=model,
-            train_loader=train_loader,
-            val_loader=val_loader,
-        )
-        
-        # Train for a few epochs
-        initial_loss = None
-        final_loss = None
-        
-        for epoch in range(3):
-            metrics = trainer.train_epoch()
-            if epoch == 0:
-                initial_loss = metrics["loss"]
-            final_loss = metrics["loss"]
-        
-        # Validate
-        val_metrics = trainer.validate()
-        
-        assert "loss" in val_metrics
-        # Loss should not explode
-        assert final_loss < initial_loss * 2
-
 
 class TestConfigurableCNNIntegration:
     """Integration tests for configurable CNN with different kernel sizes."""
@@ -327,72 +269,6 @@ class TestReinforcementLearningIntegration:
         
         # Verify training completed
         assert len(total_rewards) == 10
-
-
-class TestCheckpointingIntegration:
-    """Integration tests for model checkpointing."""
-
-    def test_save_load_resume_training(self, tmp_path, encoder):
-        """Test saving, loading, and resuming training."""
-        np.random.seed(42)
-        
-        # Generate data
-        sequences = ["".join(np.random.choice(list("ACGT"), size=200)) for _ in range(16)]
-        encoded = []
-        for seq in sequences:
-            enc = encoder.encode(seq)
-            encoded.append(enc)
-        
-        batch = np.stack(encoded)
-        batch = np.transpose(batch, (0, 2, 1))
-        X = torch.from_numpy(batch).float()
-        y = torch.randint(0, 3, (16,))
-        
-        dataset = torch.utils.data.TensorDataset(X, y)
-        loader = torch.utils.data.DataLoader(dataset, batch_size=8)
-        
-        # Create and train model - use seq_length
-        model1 = MultiScaleCNN(seq_length=200, num_classes=3, branch_channels=32)
-        
-        trainer1 = Trainer(
-            model=model1,
-            train_loader=loader,
-            val_loader=loader,
-        )
-        
-        # Train for 3 epochs
-        for _ in range(3):
-            trainer1.train_epoch()
-        
-        # Save checkpoint
-        checkpoint_path = tmp_path / "checkpoint.pt"
-        trainer1.save_checkpoint(str(checkpoint_path))
-        
-        # Create new model and load checkpoint
-        model2 = MultiScaleCNN(seq_length=200, num_classes=3, branch_channels=32)
-        
-        trainer2 = Trainer(
-            model=model2,
-            train_loader=loader,
-            val_loader=loader,
-        )
-        
-        trainer2.load_checkpoint(str(checkpoint_path))
-        
-        # Verify models produce same output
-        model1.eval()
-        model2.eval()
-        
-        X_eval = X.to(trainer1.device)
-
-        with torch.no_grad():
-            out1 = model1(X_eval)
-            out2 = model2(X_eval)
-        
-        torch.testing.assert_close(out1, out2)
-        
-        # Continue training
-        trainer2.train_epoch()
 
 
 class TestConfigIntegration:

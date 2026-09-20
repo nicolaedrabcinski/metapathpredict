@@ -102,14 +102,20 @@ Checkpoints saved to `data/weights/taxa8/`:
 ```bash
 metapathpredict predict \
     --input sequences.fasta \
-    --model data/weights/taxa8/rl_best.pt
+    --model data/weights/taxa8/contrastive_best.pt
 ```
+
+In our own runs a plain CNN trained by `scripts/baselines.py supervised` (cross-entropy, no
+contrastive pretraining) has consistently matched or beaten this pipeline's `contrastive_best.pt`,
+and RL fine-tuning (`rl_best.pt`) has never beaten the plain contrastive checkpoint either — see
+"Reference points and model comparisons" below. `predict`/`evaluate` accept checkpoints from either
+source (`contrastive_best.pt`, `rl_best.pt`, or a `scripts/baselines.py --save-checkpoint` model.pt).
 
 ### 5. Evaluate
 
 ```bash
 metapathpredict evaluate \
-    --model data/weights/taxa8/rl_best.pt \
+    --model data/weights/taxa8/contrastive_best.pt \
     --data data/datasets/taxa8/encoded_test_500.hdf5
 ```
 
@@ -148,7 +154,10 @@ python scripts/compare_predictions.py A.npy B.npy --only far # is B better than 
 | `full` | `--pipeline full` | Contrastive pretrain → RL fine-tune (default) |
 | `contrastive` | `--pipeline contrastive` | Contrastive pretraining only |
 | `rl` | `--pipeline rl` | RL training only (needs encoder checkpoint) |
-| `supervised` | `--pipeline supervised` | Legacy supervised CNN |
+
+A plain supervised CNN (no contrastive pretraining, no RL) is trained separately via
+`scripts/baselines.py supervised`, not through `metapathpredict train` — see "Reference points and
+model comparisons" above. It is currently our best-performing recipe.
 
 ## Architecture
 
@@ -251,13 +260,14 @@ metapathpredict/
 │   ├── models/
 │   │   ├── contrastive.py      # ContrastiveEncoder, NTXent, SupCon, augmentation
 │   │   ├── reinforcement.py    # DQN, PolicyGradient, ActorCritic, RLTrainer
-│   │   ├── configurable_cnn.py # Backbone CNN with presets
-│   │   └── unified.py          # Legacy supervised classifier
+│   │   └── configurable_cnn.py # Backbone CNN with presets (used by scripts/baselines.py too)
 │   ├── data/
 │   │   ├── dataset.py          # HDF5 dataset loaders
 │   │   ├── datamodule.py       # DataModule with train/val/test splits
 │   │   └── preprocessing.py    # One-hot encoding, fragmentation
-│   ├── training/               # Legacy supervised trainer, callbacks
+│   ├── baselines.py            # Plain CNN / k-mer reference models (scripts/baselines.py)
+│   ├── explain.py              # Attribution methods (scripts/explain.py)
+│   ├── genome_eval.py          # Genome-level bootstrap evaluation
 │   ├── api/                    # FastAPI backend
 │   ├── config/                 # Pydantic settings
 │   └── cli.py                  # CLI entry point
