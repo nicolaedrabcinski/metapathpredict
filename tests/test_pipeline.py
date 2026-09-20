@@ -2,6 +2,8 @@
 Tests for the full Contrastive + RL pipeline integration.
 """
 
+import argparse
+import csv
 import tempfile
 from pathlib import Path
 
@@ -300,3 +302,77 @@ class TestCheckpointLoading:
         torch.save({"something_else": {}}, path)
         with pytest.raises(ValueError):
             _load_model_from_checkpoint(path, torch.device("cpu"))
+
+
+class TestPredictContigs:
+    """predict_command slides a window across a sequence longer than the model's fragment size (Q-2/Q-3)."""
+
+    def _checkpoint(self, tmp_path, num_classes=3):
+        from metapathpredict.baselines import save_supervised_checkpoint
+        from metapathpredict.models.configurable_cnn import ConfigurableCNN
+
+        model = ConfigurableCNN(num_classes=num_classes, kernel_preset="small", base_channels=16).eval()
+        path = tmp_path / "model.pt"
+        save_supervised_checkpoint(model, path, {
+            "backbone": "small", "base_channels": 16, "num_classes": num_classes,
+            "class_names": ["bacteria", "eukaryotic", "virus"][:num_classes],
+        })
+        return path
+
+    def _fasta(self, tmp_path, records):
+        path = tmp_path / "in.fasta"
+        with open(path, "w") as f:
+            for seq_id, seq in records:
+                f.write(f">{seq_id}\n{seq}\n")
+        return path
+
+    def test_a_short_sequence_uses_one_window_a_long_one_slides(self, tmp_path):
+        import random
+
+        from metapathpredict.cli import predict_command
+
+        random.seed(0)
+        model_path = self._checkpoint(tmp_path)
+        short = "".join(random.choice("ACGT") for _ in range(100))
+        long_contig = "".join(random.choice("ACGT") for _ in range(1350))  # 2 full 500bp windows + a dropped tail
+        fasta = self._fasta(tmp_path, [("short_seq", short), ("long_contig", long_contig)])
+        out = tmp_path / "out.tsv"
+
+        config_path = tmp_path / "predict.yaml"
+        config_path.write_text("data:\n  default_fragment_size: 500\n")
+        args = argparse.Namespace(model=str(model_path), input=str(fasta), output=str(out), config=str(config_path),
+                                  device="cpu", window_step=None)
+        assert predict_command(args) == 0
+
+        rows = {r["sequence_id"]: r for r in csv.DictReader(open(out), delimiter="\t")}
+        assert rows["short_seq"]["num_windows"] == "1" and rows["short_seq"]["length"] == "100"
+        assert rows["long_contig"]["num_windows"] == "2" and rows["long_contig"]["length"] == "1350"
+        for row in rows.values():
+            assert row["predicted_class"] in ("bacteria", "eukaryotic", "virus")
+            probs = [float(row[f"prob_{c}"]) for c in ("bacteria", "eukaryotic", "virus")]
+            assert pytest.approx(sum(probs), abs=1e-3) == 1.0
+
+    def test_window_step_controls_overlap_of_the_sliding_windows(self, tmp_path, monkeypatch):
+        from metapathpredict.cli import predict_command
+
+        model_path = self._checkpoint(tmp_path)
+        fasta = self._fasta(tmp_path, [("c", "A" * 1500)])
+        out = tmp_path / "out.tsv"
+
+        calls = []
+        import metapathpredict.contigs as contigs_module
+        original = contigs_module.classify_contig
+
+        def spy(probs_fn, sequence, window, step=None):
+            calls.append(step or window)
+            return original(probs_fn, sequence, window, step)
+
+        monkeypatch.setattr("metapathpredict.contigs.classify_contig", spy)
+        config_path = tmp_path / "predict.yaml"
+        config_path.write_text("data:\n  default_fragment_size: 500\n")
+        args = argparse.Namespace(model=str(model_path), input=str(fasta), output=str(out), config=str(config_path),
+                                  device="cpu", window_step=250)
+        assert predict_command(args) == 0
+        assert calls == [250]
+        rows = list(csv.DictReader(open(out), delimiter="\t"))
+        assert rows[0]["num_windows"] == str(len(range(0, 1500 - 500 + 1, 250)))

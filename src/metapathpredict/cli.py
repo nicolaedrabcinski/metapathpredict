@@ -874,6 +874,7 @@ def _predict_single(model, model_type: str, x: torch.Tensor,
 def predict_command(args: argparse.Namespace) -> int:
     """Run inference on input data using contrastive/RL models."""
     from metapathpredict.config import Settings
+    from metapathpredict.contigs import classify_contig
 
     settings = Settings.from_yaml(args.config) if args.config else Settings()
 
@@ -913,9 +914,14 @@ def predict_command(args: argparse.Namespace) -> int:
 
     # Make predictions
     output_path = Path(args.output) if args.output else input_path.with_suffix(".predictions.tsv")
+    window_step = args.window_step or fragment_size
+
+    def window_probs(window_seq: str) -> list[float]:
+        x = _encode_sequence_tensor(window_seq, fragment_size).to(device)
+        return _predict_single(model, model_type, x, algorithm)[2]
 
     with open(output_path, "w") as f:
-        f.write("sequence_id\tpredicted_class\tconfidence\t")
+        f.write("sequence_id\tlength\tnum_windows\tpredicted_class\tconfidence\t")
         f.write("\t".join([f"prob_{c}" for c in class_names]))
         f.write("\n")
 
@@ -923,15 +929,23 @@ def predict_command(args: argparse.Namespace) -> int:
         total_conf = 0.0
 
         for i, (seq_id, seq) in enumerate(zip(seq_ids, sequences)):
-            x = _encode_sequence_tensor(seq, fragment_size).to(device)
-            class_idx, confidence, probs = _predict_single(
-                model, model_type, x, algorithm
-            )
+            if len(seq) > fragment_size:
+                # A contig: slide a fragment_size window across it and aggregate by mean
+                # log-probability (metapathpredict.contigs), instead of only looking at the first
+                # fragment_size bases and discarding the rest.
+                result = classify_contig(window_probs, seq, fragment_size, window_step)
+                class_idx, probs, num_windows = result["predicted_class"], result["probs"], result["num_windows"]
+                confidence = probs[class_idx]
+            else:
+                x = _encode_sequence_tensor(seq, fragment_size).to(device)
+                class_idx, confidence, probs = _predict_single(model, model_type, x, algorithm)
+                num_windows = 1
+
             pred_label = class_names[class_idx]
             class_counts[pred_label] += 1
             total_conf += confidence
 
-            f.write(f"{seq_id}\t{pred_label}\t{confidence:.4f}\t")
+            f.write(f"{seq_id}\t{len(seq)}\t{num_windows}\t{pred_label}\t{confidence:.4f}\t")
             f.write("\t".join([f"{p:.4f}" for p in probs]))
             f.write("\n")
 
@@ -1695,6 +1709,9 @@ def main() -> int:
     predict_parser.add_argument("--output", "-o", help="Output file")
     predict_parser.add_argument("--config", "-c", help="Path to config file")
     predict_parser.add_argument("--device", help="Device (cuda/cpu)")
+    predict_parser.add_argument("--window-step", type=int,
+                                help="For sequences longer than the model's fragment size: distance "
+                                "between sliding windows (default: the fragment size, i.e. non-overlapping)")
     predict_parser.set_defaults(func=predict_command)
 
     # Prepare command
