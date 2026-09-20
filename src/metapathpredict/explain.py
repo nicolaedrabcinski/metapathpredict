@@ -19,7 +19,7 @@ to over-read, so the module also has the tests that say whether a method deserve
 from __future__ import annotations
 
 import copy
-from typing import Callable
+from collections.abc import Callable
 
 import numpy as np
 import torch
@@ -234,7 +234,7 @@ def dinucleotide_shuffle(seq: np.ndarray, rng: np.random.Generator) -> np.ndarra
             outs.remove(exits[vertex])
         rng.shuffle(outs)
         shuffled[vertex] = outs + ([exits[vertex]] if vertex != last else [])
-    out, cursor, node = [seq[0]], {v: 0 for v in shuffled}, seq[0]
+    out, cursor, node = [seq[0]], dict.fromkeys(shuffled, 0), seq[0]
     for _ in range(len(seq) - 1):
         node_next = shuffled[node][cursor[node]]
         cursor[node] += 1

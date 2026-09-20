@@ -9,7 +9,6 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Any
 
 import numpy as np
 import torch
@@ -87,10 +86,7 @@ def train_command(args: argparse.Namespace) -> int:
     from metapathpredict.data import SequenceDataModule
 
     # Load config
-    if args.config:
-        settings = Settings.from_yaml(args.config)
-    else:
-        settings = Settings()
+    settings = Settings.from_yaml(args.config) if args.config else Settings()
 
     # Cap CPU thread usage (torch intra-op parallelism + DataLoader workers)
     # regardless of how many cores are available on the box.
@@ -761,7 +757,6 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
     Returns (model, model_type) where model_type is 'contrastive', 'rl' (returned as a 3-tuple with the
     algorithm) or 'supervised'.
     """
-    import torch.nn.functional as F
     from metapathpredict.models import (
         ActorCriticAgent,
         ContrastiveEncoder,
@@ -870,10 +865,7 @@ def predict_command(args: argparse.Namespace) -> int:
     """Run inference on input data using contrastive/RL models."""
     from metapathpredict.config import Settings
 
-    if args.config:
-        settings = Settings.from_yaml(args.config)
-    else:
-        settings = Settings()
+    settings = Settings.from_yaml(args.config) if args.config else Settings()
 
     device = setup_device(args)
     logger.info(f"Inference on {device}")
@@ -917,7 +909,7 @@ def predict_command(args: argparse.Namespace) -> int:
         f.write("\t".join([f"prob_{c}" for c in class_names]))
         f.write("\n")
 
-        class_counts = {c: 0 for c in class_names}
+        class_counts = dict.fromkeys(class_names, 0)
         total_conf = 0.0
 
         for i, (seq_id, seq) in enumerate(zip(seq_ids, sequences)):
@@ -1036,7 +1028,7 @@ def _assign_group_splits(groups: list[str], ratios: dict[str, float], rng: np.ra
     keys.sort(key=lambda k: -len(members[k]))  # stable: equal-sized groups stay in random order
 
     targets = {s: ratios[s] * len(groups) for s in names}
-    load = {s: 0 for s in names}
+    load = dict.fromkeys(names, 0)
     placed: dict[str, list[str]] = {s: [] for s in names}
     for key, split in forced.items():
         placed[split].append(key)
@@ -1204,7 +1196,7 @@ def _prepare_from_manifest(args: argparse.Namespace, settings, sequence_length: 
     }
     test_fasta = open(output_dir / "test_fragments.fasta", "w")
     assignments: list[dict] = []
-    counts = {name: {s: 0 for s in split_names} for name in TAXON_CLASSES}
+    counts = {name: dict.fromkeys(split_names, 0) for name in TAXON_CLASSES}
     t0 = time.time()
     done = 0
 
@@ -1318,16 +1310,13 @@ def prepare_command(args: argparse.Namespace) -> int:
     Splits are assigned per source sequence (genome/chromosome/contig), not per
     fragment — see _assign_sequence_splits.
     """
+    import h5py
+
     from metapathpredict.config import Settings
     from metapathpredict.data import OneHotEncoder, SequencePreprocessor
 
-    import h5py
-
     # Load config
-    if args.config:
-        settings = Settings.from_yaml(args.config)
-    else:
-        settings = Settings()
+    settings = Settings.from_yaml(args.config) if args.config else Settings()
 
     # Override with args
     sequence_length = args.length or settings.data.default_fragment_size
@@ -1416,7 +1405,7 @@ def prepare_command(args: argparse.Namespace) -> int:
             flush(split)
 
     class_counts = {0: 0, 1: 0, 2: 0}
-    class_split_counts = {c: {s: 0 for s in split_names} for c in (0, 1, 2)}
+    class_split_counts = {c: dict.fromkeys(split_names, 0) for c in (0, 1, 2)}
 
     for fasta_path in args.inputs:
         fasta_path = Path(fasta_path)
@@ -1538,8 +1527,9 @@ def prepare_command(args: argparse.Namespace) -> int:
 def _predict_split(checkpoint_path: Path, data_path: str, device, batch_size: int = 64,
                    both_strands: bool = False):
     """Run a checkpoint over an HDF5 split. Returns (model_type, class_names, targets, predictions)."""
-    from metapathpredict.data import HDF5SequenceDataset
     from torch.utils.data import DataLoader
+
+    from metapathpredict.data import HDF5SequenceDataset
 
     result = _load_model_from_checkpoint(checkpoint_path, device)
     if len(result) == 3:
@@ -1569,7 +1559,7 @@ def _evaluation_report(class_names: list[str], targets: np.ndarray, preds: np.nd
     from metapathpredict.config.settings import SUPERCLASSES, superclass_index_map
 
     label_ids = list(range(len(class_names)))
-    kwargs = dict(labels=label_ids, target_names=class_names, zero_division=0)
+    kwargs = {"labels": label_ids, "target_names": class_names, "zero_division": 0}
     report = {
         "accuracy": float((preds == targets).mean()),
         "confusion_matrix": confusion_matrix(targets, preds, labels=label_ids).tolist(),
@@ -1580,7 +1570,7 @@ def _evaluation_report(class_names: list[str], targets: np.ndarray, preds: np.nd
     if super_map is not None and len(class_names) != len(SUPERCLASSES):
         to_super = np.array(super_map)
         s_targets, s_preds = to_super[targets], to_super[preds]
-        s_kwargs = dict(labels=list(range(len(SUPERCLASSES))), target_names=SUPERCLASSES, zero_division=0)
+        s_kwargs = {"labels": list(range(len(SUPERCLASSES))), "target_names": SUPERCLASSES, "zero_division": 0}
         report["aggregated_3class"] = {
             "accuracy": float((s_targets == s_preds).mean()),
             "classification_report": classification_report(s_targets, s_preds, output_dict=True, **s_kwargs),
@@ -1666,15 +1656,15 @@ def main() -> int:
         prog="metapathpredict",
         description="MetaPathPredict: DNA sequence classification",
     )
-    
+
     parser.add_argument(
         "--version",
         action="version",
         version="%(prog)s 2.0.0",
     )
-    
+
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
-    
+
     # Train command
     train_parser = subparsers.add_parser("train", help="Train a model")
     train_parser.add_argument("--config", "-c", help="Path to config file")
@@ -1686,7 +1676,7 @@ def main() -> int:
     train_parser.add_argument("--max-threads", type=int, default=16,
                               help="Cap on torch CPU threads and DataLoader workers")
     train_parser.set_defaults(func=train_command)
-    
+
     # Predict command
     predict_parser = subparsers.add_parser("predict", help="Run inference")
     predict_parser.add_argument("--model", "-m", required=True,
@@ -1696,7 +1686,7 @@ def main() -> int:
     predict_parser.add_argument("--config", "-c", help="Path to config file")
     predict_parser.add_argument("--device", help="Device (cuda/cpu)")
     predict_parser.set_defaults(func=predict_command)
-    
+
     # Prepare command
     prepare_parser = subparsers.add_parser("prepare", help="Prepare dataset")
     prepare_parser.add_argument("inputs", nargs="*", help="Input FASTA files (omit when using --manifest)")
@@ -1721,7 +1711,7 @@ def main() -> int:
     prepare_parser.add_argument("--chunk-size", type=int, default=10000,
                                 help="Write chunk size (controls memory usage, default: 10000)")
     prepare_parser.set_defaults(func=prepare_command)
-    
+
     # Evaluate command
     eval_parser = subparsers.add_parser("evaluate", help="Evaluate model")
     eval_parser.add_argument("--model", "-m", required=True,
@@ -1734,14 +1724,14 @@ def main() -> int:
     eval_parser.add_argument("--both-strands", action="store_true",
                              help="Average predictions over each fragment and its reverse complement")
     eval_parser.set_defaults(func=evaluate_command)
-    
+
     # Parse arguments
     args = parser.parse_args()
-    
+
     if args.command is None:
         parser.print_help()
         return 1
-    
+
     return args.func(args)
 
 

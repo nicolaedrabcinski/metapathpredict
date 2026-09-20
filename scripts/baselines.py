@@ -37,8 +37,11 @@ from metapathpredict.baselines import (
 from metapathpredict.cli import _evaluation_report, _report_to_metrics
 from metapathpredict.data.datamodule import _open_split
 from metapathpredict.experiment_tracking import MLflowSink
-from metapathpredict.genome_eval import evaluate_by_genome, format_genome_report, genome_report_to_metrics
-from metapathpredict.models.configurable_cnn import ConfigurableCNN
+from metapathpredict.genome_eval import (
+    evaluate_by_genome,
+    format_genome_report,
+    genome_report_to_metrics,
+)
 from metapathpredict.models.contrastive import ContrastiveAugmentation
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -99,8 +102,10 @@ def run_kmer(args, data_dir: Path, class_names: list[str]) -> None:
         if model_name == "logreg":
             scaler = StandardScaler().fit(x_train)
             model = LogisticRegression(max_iter=300).fit(scaler.transform(x_train), y_train)
-            predict = lambda x: model.predict(scaler.transform(x))
-            predict_proba = lambda x: model.predict_proba(scaler.transform(x))
+            def predict(x):
+                return model.predict(scaler.transform(x))
+            def predict_proba(x):
+                return model.predict_proba(scaler.transform(x))
         else:
             model = HistGradientBoostingClassifier(max_iter=args.iterations, early_stopping=False, random_state=args.seed)
             model.fit(x_train, y_train)

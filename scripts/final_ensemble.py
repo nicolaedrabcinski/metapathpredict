@@ -22,12 +22,11 @@ import numpy as np
 import torch
 
 from metapathpredict.baselines import load_supervised_checkpoint
-from metapathpredict.cli import _evaluation_report, _report_to_metrics
+from metapathpredict.cli import _evaluation_report
 from metapathpredict.genome_eval import (
     TEST_FASTA,
     evaluate_by_genome,
     format_genome_report,
-    genome_report_to_metrics,
     paired_difference,
     read_fragment_accessions,
 )
@@ -93,7 +92,8 @@ def main() -> None:
             print(f"\n{label}: skipped, {len(ref_preds)} predictions for a test split of {len(y_test)} fragments")
             continue
         diff = paired_difference(y_test, ref_preds, preds, genomes, names, n_boot=1000)
-        f = lambda d: f"{100 * d['value']:+.1f} [{100 * d['ci_low']:+.1f}, {100 * d['ci_high']:+.1f}]"
+        def f(d):
+            return f"{100 * d['value']:+.1f} [{100 * d['ci_low']:+.1f}, {100 * d['ci_high']:+.1f}]"
         print(f"\nensemble vs {label} (paired over genomes): accuracy {f(diff['accuracy'])}"
               + (f", 3-class {f(diff['accuracy_3class'])}" if "accuracy_3class" in diff else "")
               + f", P(ensemble better)={diff['p_b_better']:.2f}")

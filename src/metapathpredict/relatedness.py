@@ -16,6 +16,8 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import numpy as np
+
 from metapathpredict.taxonomy import LINEAGE_COLUMNS, RANKS, lineage_columns, lineage_of
 
 CLOSEST_FIRST = ("genus", "family", "order", "class", "phylum")
@@ -75,28 +77,24 @@ def _split_rows(assignments_tsv: str | Path, split: str) -> list[dict]:
     return [row for row in _read(Path(assignments_tsv)) if row["split"] == split]
 
 
-def fragment_genomes(dataset_dir: str | Path, split: str) -> "np.ndarray":
+def fragment_genomes(dataset_dir: str | Path, split: str) -> np.ndarray:
     """
     Accession of the genome every fragment of `split` was cut from, in the order of the HDF5 file.
 
     `prepare` writes the fragments genome by genome, in the order of the rows of split_assignments.tsv,
     and records how many fragments each genome gave, so the order can be rebuilt without storing it.
     """
-    import numpy as np
-
     rows = _split_rows(Path(dataset_dir) / "split_assignments.tsv", split)
     return np.repeat([row["accession"] for row in rows], [int(row["fragments"]) for row in rows])
 
 
-def lineage_targets(dataset_dir: str | Path, split: str, rank: str, names: list[str] | None = None) -> tuple["np.ndarray", list[str]]:
+def lineage_targets(dataset_dir: str | Path, split: str, rank: str, names: list[str] | None = None) -> tuple[np.ndarray, list[str]]:
     """
     Taxonomic label of every fragment of `split` at `rank` (phylum, class, order, family or genus), as class
     indices for an auxiliary classification head, and the list of label names. Fragments whose genome has no
     name at that rank, or a name outside `names` (pass the names of the training split when labelling another
     one), get -100, the index that cross-entropy ignores.
     """
-    import numpy as np
-
     if rank not in RANKS:
         raise ValueError(f"rank must be one of {RANKS}, got {rank!r}")
     column = LINEAGE_COLUMNS[rank]

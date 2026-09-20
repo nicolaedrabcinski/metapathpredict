@@ -17,8 +17,8 @@ import time
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ def fetch_lineages(taxids: Iterable[str | int], cache_path: str | Path, batch: i
 
 
 def lineage_of(lineages: dict, taxid: str | int) -> dict[str, str | None]:
-    return lineages.get(str(taxid)) or {rank: None for rank in RANKS}
+    return lineages.get(str(taxid)) or dict.fromkeys(RANKS)
 
 
 # Columns in split_assignments.tsv. Prefixed because that file already has a `class` column (one of

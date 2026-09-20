@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from metapathpredict.api.routers import samples, predictions, health
+from metapathpredict.api.routers import health, predictions, samples
 
 
 def create_app() -> FastAPI:

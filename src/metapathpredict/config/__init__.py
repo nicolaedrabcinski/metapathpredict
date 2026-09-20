@@ -1,24 +1,24 @@
 """Configuration module with Pydantic settings."""
 
 from metapathpredict.config.settings import (
-    Settings,
-    DataConfig,
-    ModelConfig,
-    TrainingConfig,
-    InferenceConfig,
-    PathConfig,
     # Class label constants - single source of truth
     CLASS_NAMES,
     CLASS_TO_IDX,
     IDX_TO_CLASS,
     NUM_CLASSES,
     ClassLabel,
+    DataConfig,
+    InferenceConfig,
+    ModelConfig,
+    PathConfig,
+    Settings,
+    TrainingConfig,
 )
 
 __all__ = [
     "Settings",
     "DataConfig",
-    "ModelConfig", 
+    "ModelConfig",
     "TrainingConfig",
     "InferenceConfig",
     "PathConfig",

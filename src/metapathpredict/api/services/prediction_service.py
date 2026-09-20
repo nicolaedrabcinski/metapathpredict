@@ -2,7 +2,6 @@
 
 import logging
 from pathlib import Path
-from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -10,18 +9,18 @@ import torch.nn.functional as F
 logger = logging.getLogger(__name__)
 
 from metapathpredict.api.schemas import (
-    PredictionComparison,
-    MethodPrediction,
-    ClassProbabilities,
-    MethodType,
     ClassLabel,
+    ClassProbabilities,
+    MethodPrediction,
+    MethodType,
+    PredictionComparison,
 )
 from metapathpredict.api.services.sample_service import SampleService
 from metapathpredict.models.contrastive import ContrastiveEncoder
 from metapathpredict.models.reinforcement import (
+    ActorCriticAgent,
     DQNAgent,
     PolicyGradientAgent,
-    ActorCriticAgent,
 )
 
 # Label index → ClassLabel mapping
@@ -38,9 +37,9 @@ DEFAULT_CLASS_NAMES = ["bacteria", "eukaryotic", "virus"]
 
 def api_probabilities(probs: torch.Tensor, class_names: list[str]) -> dict:
     """Sum per-class probabilities into bacteria/eukaryotic/virus (identity for 3-class models)."""
-    from metapathpredict.config.settings import SUPERCLASSES, TAXON_TO_SUPERCLASS
+    from metapathpredict.config.settings import TAXON_TO_SUPERCLASS
 
-    out = {label: 0.0 for label in SUPERCLASS_TO_API.values()}
+    out = dict.fromkeys(SUPERCLASS_TO_API.values(), 0.0)
     for name, p in zip(class_names, probs.tolist()):
         out[SUPERCLASS_TO_API[TAXON_TO_SUPERCLASS[name]]] += p
     return out
@@ -68,9 +67,9 @@ class PredictionService:
         self.sample_service = SampleService()
         self.weights_dir = Path(weights_dir)
         self.device = torch.device("cpu")
-        self._contrastive_encoder: Optional[ContrastiveEncoder] = None
+        self._contrastive_encoder: ContrastiveEncoder | None = None
         self._rl_agent = None
-        self._rl_algorithm: Optional[str] = None
+        self._rl_algorithm: str | None = None
         self._contrastive_class_names = DEFAULT_CLASS_NAMES
         self._rl_class_names = DEFAULT_CLASS_NAMES
         self._models_loaded = False
@@ -209,8 +208,8 @@ class PredictionService:
     async def get_predictions(
         self,
         sample_id: int,
-        methods: Optional[list[MethodType]] = None,
-    ) -> Optional[PredictionComparison]:
+        methods: list[MethodType] | None = None,
+    ) -> PredictionComparison | None:
         """Get predictions for a sample from all methods."""
         sample = await self.sample_service.get_sample(sample_id)
         if not sample:

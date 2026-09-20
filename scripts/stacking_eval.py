@@ -23,7 +23,12 @@ import torch
 
 from metapathpredict import stacking
 from metapathpredict.baselines import kmer_frequencies, load_supervised_checkpoint
-from metapathpredict.genome_eval import TEST_FASTA, genome_report, paired_difference, read_fragment_accessions
+from metapathpredict.genome_eval import (
+    TEST_FASTA,
+    genome_report,
+    paired_difference,
+    read_fragment_accessions,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -104,7 +109,8 @@ def main() -> None:
         candidates[label] = stacking.predict_meta(meta, [test[n] for n in all_names], len(names))
 
     reference = candidates["average of CNNs"].argmax(1)
-    f = lambda x: f"{100 * x['value']:.1f}% [{100 * x['ci_low']:.1f}, {100 * x['ci_high']:.1f}]"
+    def f(x):
+        return f"{100 * x['value']:.1f}% [{100 * x['ci_low']:.1f}, {100 * x['ci_high']:.1f}]"
     print(f"\n{'test, 8 classes':44s} {'accuracy [95% by genomes]':>26s} {'3-class':>22s} {'vs average of CNNs (paired)':>30s}")
     results = {}
     for label, probs in candidates.items():

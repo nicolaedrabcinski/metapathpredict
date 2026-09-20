@@ -1,8 +1,8 @@
 """Pydantic schemas for API requests and responses."""
 
-from pydantic import BaseModel, Field
-from typing import Optional
 from enum import Enum
+
+from pydantic import BaseModel, Field
 
 
 class ClassLabel(str, Enum):
@@ -25,11 +25,11 @@ class MethodType(str, Enum):
 
 class SampleBase(BaseModel):
     """Base sample schema."""
-    ncbi_id: Optional[str] = None
+    ncbi_id: str | None = None
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     source: str = "unknown"
-    organism: Optional[str] = None
+    organism: str | None = None
 
 
 class SampleCreate(SampleBase):
@@ -42,8 +42,8 @@ class SampleSummary(SampleBase):
     id: int
     length: int
     gc_content: float
-    true_label: Optional[ClassLabel] = None
-    
+    true_label: ClassLabel | None = None
+
     class Config:
         from_attributes = True
 
@@ -86,9 +86,9 @@ class PredictionComparison(BaseModel):
     """Comparison of predictions from all methods."""
     sample_id: int
     sample_name: str
-    true_label: Optional[ClassLabel] = None
+    true_label: ClassLabel | None = None
     predictions: list[MethodPrediction]
-    consensus: Optional[ClassLabel] = None
+    consensus: ClassLabel | None = None
     agreement: float = Field(..., ge=0, le=1, description="Agreement ratio between methods")
 
 

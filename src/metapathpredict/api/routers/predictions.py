@@ -1,14 +1,14 @@
 """Prediction endpoints."""
 
+
 from fastapi import APIRouter, HTTPException, Query
-from typing import Optional
 
 from metapathpredict.api.schemas import (
-    PredictionComparison,
-    PredictionRequest,
+    ClassLabel,
     MethodPrediction,
     MethodType,
-    ClassLabel,
+    PredictionComparison,
+    PredictionRequest,
 )
 from metapathpredict.api.services.prediction_service import PredictionService
 
@@ -19,14 +19,14 @@ prediction_service = PredictionService()
 @router.get("/{sample_id}", response_model=PredictionComparison)
 async def get_sample_predictions(
     sample_id: int,
-    methods: Optional[list[MethodType]] = Query(
+    methods: list[MethodType] | None = Query(
         None,
         description="Methods to include (default: all)"
     ),
 ):
     """
     Get predictions for a sample from all classification methods.
-    
+
     Returns:
     - Predictions from Contrastive Learning and DRL methods
     - Consensus prediction (majority voting)
@@ -42,7 +42,7 @@ async def get_sample_predictions(
 async def predict_sequence(request: PredictionRequest):
     """
     Classify a new sequence using all methods.
-    
+
     Accepts raw DNA sequence and returns predictions
     from all requested methods.
     """
@@ -60,7 +60,7 @@ async def get_fragment_predictions(
 ):
     """
     Get predictions for each fragment of a sample.
-    
+
     Useful for visualizing prediction consistency across sequence regions.
     """
     return await prediction_service.get_fragment_predictions(
@@ -77,7 +77,7 @@ async def get_disagreements(
 ):
     """
     Find samples where methods disagree.
-    
+
     Useful for identifying edge cases and potential labeling errors.
     """
     return await prediction_service.get_disagreements(
@@ -97,7 +97,7 @@ async def get_predictions_by_class(
 ):
     """
     Get samples predicted as a specific class.
-    
+
     Useful for analyzing predictions by class.
     """
     return await prediction_service.get_by_class(

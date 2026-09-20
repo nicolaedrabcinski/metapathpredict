@@ -37,7 +37,11 @@ from metapathpredict.cli import (
 from metapathpredict.config import Settings
 from metapathpredict.data import SequenceDataModule
 from metapathpredict.experiment_tracking import MLflowSink, NullSink, flatten_params
-from metapathpredict.genome_eval import evaluate_by_genome, format_genome_report, genome_report_to_metrics
+from metapathpredict.genome_eval import (
+    evaluate_by_genome,
+    format_genome_report,
+    genome_report_to_metrics,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 

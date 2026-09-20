@@ -12,8 +12,9 @@ from __future__ import annotations
 import logging
 import os
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,7 @@ class MetricsSink:
     def close(self, status: str = "FINISHED") -> None:
         pass
 
-    def __enter__(self) -> "MetricsSink":
+    def __enter__(self) -> MetricsSink:
         return self
 
     def __exit__(self, exc_type, exc, tb) -> None:

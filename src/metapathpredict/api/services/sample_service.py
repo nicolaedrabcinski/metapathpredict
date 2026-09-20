@@ -1,16 +1,14 @@
 """Sample management service."""
 
 import math
-from typing import Optional
-from pathlib import Path
 
 from metapathpredict.api.schemas import (
-    SampleListResponse,
-    SampleDetail,
-    SampleSummary,
-    SampleCreate,
     ClassLabel,
     DatasetStats,
+    SampleCreate,
+    SampleDetail,
+    SampleListResponse,
+    SampleSummary,
 )
 
 
@@ -24,13 +22,13 @@ def compute_gc_content(sequence: str) -> float:
 
 class SampleService:
     """Service for managing samples."""
-    
+
     def __init__(self):
         # In-memory storage for demo (replace with database)
         self._samples: dict[int, dict] = {}
         self._next_id = 1
         self._load_demo_samples()
-    
+
     def _load_demo_samples(self):
         """Load demo samples for development."""
         demo_samples = [
@@ -62,17 +60,17 @@ class SampleService:
                 "true_label": ClassLabel.EUKARYOTIC,
             },
         ]
-        
+
         for sample in demo_samples:
             self._create_sample_internal(sample)
-    
+
     def _create_sample_internal(self, data: dict) -> SampleSummary:
         """Create sample internally."""
         sample_id = self._next_id
         self._next_id += 1
-        
+
         sequence = data.get("sequence", "")
-        
+
         self._samples[sample_id] = {
             "id": sample_id,
             "ncbi_id": data.get("ncbi_id"),
@@ -86,9 +84,9 @@ class SampleService:
             "true_label": data.get("true_label"),
             "fragments_count": max(1, len(sequence) // 1000),
         }
-        
+
         return self._to_summary(self._samples[sample_id])
-    
+
     def _to_summary(self, sample: dict) -> SampleSummary:
         """Convert sample dict to summary."""
         return SampleSummary(
@@ -102,7 +100,7 @@ class SampleService:
             gc_content=sample["gc_content"],
             true_label=sample.get("true_label"),
         )
-    
+
     def _to_detail(self, sample: dict) -> SampleDetail:
         """Convert sample dict to detail."""
         return SampleDetail(
@@ -118,29 +116,29 @@ class SampleService:
             sequence=sample["sequence"],
             fragments_count=sample["fragments_count"],
         )
-    
+
     async def list_samples(
         self,
         page: int = 1,
         page_size: int = 20,
-        class_filter: Optional[ClassLabel] = None,
-        source_filter: Optional[str] = None,
-        search: Optional[str] = None,
-        min_length: Optional[int] = None,
-        max_length: Optional[int] = None,
+        class_filter: ClassLabel | None = None,
+        source_filter: str | None = None,
+        search: str | None = None,
+        min_length: int | None = None,
+        max_length: int | None = None,
         sort_by: str = "id",
         sort_order: str = "asc",
     ) -> SampleListResponse:
         """List samples with filtering and pagination."""
         # Filter samples
         samples = list(self._samples.values())
-        
+
         if class_filter:
             samples = [s for s in samples if s.get("true_label") == class_filter]
-        
+
         if source_filter:
             samples = [s for s in samples if s["source"].lower() == source_filter.lower()]
-        
+
         if search:
             search = search.lower()
             samples = [
@@ -148,24 +146,24 @@ class SampleService:
                 if search in s["name"].lower()
                 or (s.get("ncbi_id") and search in s["ncbi_id"].lower())
             ]
-        
+
         if min_length is not None:
             samples = [s for s in samples if s["length"] >= min_length]
-        
+
         if max_length is not None:
             samples = [s for s in samples if s["length"] <= max_length]
-        
+
         # Sort
         reverse = sort_order == "desc"
         samples.sort(key=lambda s: s.get(sort_by, 0), reverse=reverse)
-        
+
         # Paginate
         total = len(samples)
         pages = math.ceil(total / page_size) if total > 0 else 1
         start = (page - 1) * page_size
         end = start + page_size
         page_samples = samples[start:end]
-        
+
         return SampleListResponse(
             items=[self._to_summary(s) for s in page_samples],
             total=total,
@@ -173,29 +171,29 @@ class SampleService:
             page_size=page_size,
             pages=pages,
         )
-    
-    async def get_sample(self, sample_id: int) -> Optional[SampleDetail]:
+
+    async def get_sample(self, sample_id: int) -> SampleDetail | None:
         """Get sample by ID."""
         sample = self._samples.get(sample_id)
         if not sample:
             return None
         return self._to_detail(sample)
-    
+
     async def get_sequence_region(
         self,
         sample_id: int,
         start: int,
-        end: Optional[int],
-    ) -> Optional[dict]:
+        end: int | None,
+    ) -> dict | None:
         """Get sequence region."""
         sample = self._samples.get(sample_id)
         if not sample:
             return None
-        
+
         sequence = sample["sequence"]
         if end is None:
             end = len(sequence)
-        
+
         return {
             "sample_id": sample_id,
             "start": start,
@@ -203,18 +201,18 @@ class SampleService:
             "sequence": sequence[start:end],
             "total_length": len(sequence),
         }
-    
+
     async def create_sample(self, data: SampleCreate) -> SampleSummary:
         """Create a new sample."""
         return self._create_sample_internal(data.model_dump())
-    
+
     async def delete_sample(self, sample_id: int) -> bool:
         """Delete a sample."""
         if sample_id in self._samples:
             del self._samples[sample_id]
             return True
         return False
-    
+
     async def get_similar_samples(
         self,
         sample_id: int,
@@ -223,35 +221,35 @@ class SampleService:
         """Get similar samples (placeholder)."""
         # TODO: Implement using contrastive embeddings
         samples = [
-            self._to_summary(s) 
-            for sid, s in self._samples.items() 
+            self._to_summary(s)
+            for sid, s in self._samples.items()
             if sid != sample_id
         ]
         return samples[:limit]
-    
+
     async def get_stats(self) -> DatasetStats:
         """Get dataset statistics."""
         samples = list(self._samples.values())
-        
+
         by_class = {}
         by_source = {}
         total_length = 0
         total_gc = 0
-        
+
         for s in samples:
             label = s.get("true_label")
             if label:
                 label_str = label.value if hasattr(label, "value") else str(label)
                 by_class[label_str] = by_class.get(label_str, 0) + 1
-            
+
             source = s["source"]
             by_source[source] = by_source.get(source, 0) + 1
-            
+
             total_length += s["length"]
             total_gc += s["gc_content"]
-        
+
         n = len(samples) or 1
-        
+
         return DatasetStats(
             total_samples=len(samples),
             by_class=by_class,

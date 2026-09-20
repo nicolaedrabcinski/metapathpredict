@@ -10,7 +10,6 @@ from typing import Literal
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 from .base import BaseModel, ConvBlock, SEBlock, group_count, reverse_complement
 
@@ -18,14 +17,14 @@ from .base import BaseModel, ConvBlock, SEBlock, group_count, reverse_complement
 class ConfigurableCNN(BaseModel):
     """
     CNN with configurable kernel sizes for DNA sequence classification.
-    
+
     Supports multiple kernel size configurations:
     - Small (5): Better for short motifs
-    - Medium (7): Balanced approach  
+    - Medium (7): Balanced approach
     - Large (10): Better for longer patterns
     - Multi-scale: Combines multiple kernel sizes
     """
-    
+
     KERNEL_PRESETS = {
         "small": [5, 5, 5],
         "medium": [7, 7, 7],
@@ -33,7 +32,7 @@ class ConfigurableCNN(BaseModel):
         "progressive": [5, 7, 10],
         "multi": [5, 7, 10],  # Multi-scale in parallel
     }
-    
+
     def __init__(
         self,
         in_channels: int = 4,
@@ -49,7 +48,7 @@ class ConfigurableCNN(BaseModel):
     ):
         """
         Initialize configurable CNN.
-        
+
         Args:
             in_channels: Input channels (4 for DNA one-hot).
             num_classes: Number of output classes.
@@ -71,21 +70,21 @@ class ConfigurableCNN(BaseModel):
             raise ValueError(f"pool must be 'avg', 'max' or 'avgmax', got {pool!r}")
         self.pool_type = pool
         self._pool_factor = 2 if pool == "avgmax" else 1
-        
+
         # Determine kernel sizes
         if custom_kernels is not None:
             self.kernel_sizes = custom_kernels
         else:
             self.kernel_sizes = self.KERNEL_PRESETS[kernel_preset]
-        
+
         self.kernel_preset = kernel_preset
         self.use_multi_scale = (kernel_preset == "multi")
-        
+
         if self.use_multi_scale:
             self._build_multiscale(in_channels, num_classes, base_channels, use_se, dropout)
         else:
             self._build_sequential(in_channels, num_classes, base_channels, num_blocks, use_se, dropout)
-    
+
     def _build_sequential(
         self,
         in_channels: int,
@@ -97,12 +96,12 @@ class ConfigurableCNN(BaseModel):
     ) -> None:
         """Build sequential CNN architecture."""
         layers = []
-        
+
         current_channels = in_channels
-        
+
         for i, kernel_size in enumerate(self.kernel_sizes[:num_blocks]):
             out_channels = base_channels * (2 ** i)
-            
+
             layers.append(
                 ConvBlock(
                     in_channels=current_channels,
@@ -114,16 +113,16 @@ class ConfigurableCNN(BaseModel):
                     **self._norm_flags(),
                 )
             )
-            
+
             if use_se:
                 layers.append(SEBlock(out_channels))
-            
+
             current_channels = out_channels
-        
+
         self.features = nn.Sequential(*layers)
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.max_pool = nn.AdaptiveMaxPool1d(1)
-        
+
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(current_channels * self._pool_factor, current_channels // 2),
@@ -131,9 +130,9 @@ class ConfigurableCNN(BaseModel):
             nn.Dropout(dropout),
             nn.Linear(current_channels // 2, num_classes),
         )
-        
+
         self._final_channels = current_channels * self._pool_factor
-    
+
     def _norm_flags(self) -> dict[str, bool]:
         return {"use_batch_norm": self.norm_type == "batch", "use_group_norm": self.norm_type == "group"}
 
@@ -147,7 +146,7 @@ class ConfigurableCNN(BaseModel):
     ) -> None:
         """Build multi-scale parallel CNN architecture."""
         self.branches = nn.ModuleList()
-        
+
         for kernel_size in self.kernel_sizes:
             branch = nn.Sequential(
                 ConvBlock(
@@ -171,10 +170,10 @@ class ConfigurableCNN(BaseModel):
                 ),
             )
             self.branches.append(branch)
-        
+
         # Fusion layer
         combined_channels = base_channels * 2 * len(self.kernel_sizes)
-        
+
         self.fusion = nn.Sequential(
             nn.Conv1d(combined_channels, base_channels * 4, kernel_size=1),
             (
@@ -184,10 +183,10 @@ class ConfigurableCNN(BaseModel):
             ),
             nn.ReLU(inplace=True),
         )
-        
+
         self.pool = nn.AdaptiveAvgPool1d(1)
         self.max_pool = nn.AdaptiveMaxPool1d(1)
-        
+
         self.classifier = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(base_channels * 4 * self._pool_factor, base_channels * 2),
@@ -195,30 +194,30 @@ class ConfigurableCNN(BaseModel):
             nn.Dropout(dropout),
             nn.Linear(base_channels * 2, num_classes),
         )
-        
+
         self._final_channels = base_channels * 4 * self._pool_factor
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Forward pass."""
         if self.use_multi_scale:
             # Process through parallel branches
             branch_outputs = [branch(x) for branch in self.branches]
-            
+
             # Align lengths (take minimum)
             min_len = min(out.size(2) for out in branch_outputs)
             branch_outputs = [out[:, :, :min_len] for out in branch_outputs]
-            
+
             # Concatenate and fuse
             x = torch.cat(branch_outputs, dim=1)
             x = self.fusion(x)
         else:
             x = self.features(x)
-        
+
         x = self._pooled(x)
         x = self.classifier(x)
-        
+
         return x
-    
+
     def _pooled(self, x: torch.Tensor) -> torch.Tensor:
         if self.pool_type == "avg":
             return self.pool(x).flatten(1)
@@ -236,9 +235,9 @@ class ConfigurableCNN(BaseModel):
             x = self.fusion(x)
         else:
             x = self.features(x)
-        
+
         x = self._pooled(x)
-        
+
         return x
 
 
@@ -249,7 +248,7 @@ class RCShared(nn.Module):
     by construction, instead of being learned from reverse-complement augmentation. Costs two forward passes.
     """
 
-    def __init__(self, base: "ConfigurableCNN", mode: str = "mean"):
+    def __init__(self, base: ConfigurableCNN, mode: str = "mean"):
         super().__init__()
         if mode not in ("mean", "max"):
             raise ValueError(f"mode must be 'mean' or 'max', got {mode!r}")
@@ -283,13 +282,13 @@ def create_configurable_cnn(
 ) -> ConfigurableCNN:
     """
     Factory function to create ConfigurableCNN.
-    
+
     Args:
         kernel_size: Kernel size (5, 7, 10) or preset name.
         in_channels: Input channels.
         num_classes: Number of classes.
         **kwargs: Additional arguments.
-    
+
     Returns:
         ConfigurableCNN instance.
     """

@@ -17,8 +17,10 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from .base import BaseModel
-from .base import reverse_complement  # noqa: F401  (re-exported)
+from .base import (
+    BaseModel,
+    reverse_complement,  # noqa: F401  (re-exported)
+)
 from .configurable_cnn import ConfigurableCNN
 
 logger = logging.getLogger(__name__)
@@ -76,11 +78,11 @@ class ProjectionHead(nn.Module):
 class ContrastiveEncoder(BaseModel):
     """
     Contrastive learning encoder for DNA sequences.
-    
+
     Uses a CNN backbone with a projection head for
     SimCLR-style contrastive learning.
     """
-    
+
     def __init__(
         self,
         in_channels: int = 4,
@@ -93,7 +95,7 @@ class ContrastiveEncoder(BaseModel):
     ):
         """
         Initialize contrastive encoder.
-        
+
         Args:
             in_channels: Input channels (4 for DNA).
             backbone: CNN backbone preset.
@@ -144,21 +146,21 @@ class ContrastiveEncoder(BaseModel):
             f"  Params: encoder={encoder_params:,}, projection={proj_params:,}, "
             f"total={total_params:,}"
         )
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass returning projected embeddings.
-        
+
         Args:
             x: Input tensor [batch, channels, length].
-        
+
         Returns:
             Projected embeddings [batch, projection_dim].
         """
         embeddings = self.encoder.get_embeddings(x)
         projections = self.projection(embeddings)
         return F.normalize(projections, dim=1)
-    
+
     def get_embeddings(self, x: torch.Tensor) -> torch.Tensor:
         """Get embeddings without projection (for downstream tasks)."""
         return self.encoder.get_embeddings(x)
@@ -198,7 +200,7 @@ class NTXentLoss(nn.Module):
             f"NTXentLoss initialized: temperature={temperature}, tau_plus={tau_plus}, beta={beta}, "
             f"decoupled={decoupled}"
         )
-    
+
     def forward(
         self,
         z_i: torch.Tensor,
@@ -206,34 +208,34 @@ class NTXentLoss(nn.Module):
     ) -> torch.Tensor:
         """
         Compute NT-Xent loss.
-        
+
         Args:
             z_i: Embeddings of first augmented view [batch, dim].
             z_j: Embeddings of second augmented view [batch, dim].
-        
+
         Returns:
             Scalar loss value.
         """
         batch_size = z_i.size(0)
         device = z_i.device
-        
+
         # Concatenate embeddings
         z = torch.cat([z_i, z_j], dim=0)  # [2*batch, dim]
-        
+
         # Compute similarity matrix
         sim = torch.mm(z, z.t()) / self.temperature  # [2*batch, 2*batch]
-        
+
         # Create mask for positive pairs
         # Positive pairs: (i, i+batch) and (i+batch, i)
         mask = torch.eye(2 * batch_size, device=device, dtype=torch.bool)
         sim = sim.masked_fill(mask, float("-inf"))
-        
+
         # Labels: positive pair indices
         labels = torch.cat([
             torch.arange(batch_size, 2 * batch_size, device=device),
             torch.arange(batch_size, device=device),
         ])
-        
+
         if self.tau_plus > 0 or self.beta > 0 or self.decoupled:
             loss = self._debiased_hard_negative_loss(sim, labels)
         else:
@@ -313,7 +315,7 @@ class SupConLoss(nn.Module):
             f"SupConLoss initialized: temperature={temperature}, "
             f"base_temperature={base_temperature}"
         )
-    
+
     def forward(
         self,
         features: torch.Tensor,
@@ -321,53 +323,53 @@ class SupConLoss(nn.Module):
     ) -> torch.Tensor:
         """
         Compute supervised contrastive loss.
-        
+
         Args:
             features: Projected features [batch, n_views, dim] or [batch, dim].
             labels: Ground truth labels [batch].
-        
+
         Returns:
             Scalar loss value.
         """
         device = features.device
-        
+
         if features.dim() == 2:
             features = features.unsqueeze(1)
-        
+
         batch_size = features.size(0)
         n_views = features.size(1)
-        
+
         # Flatten views
         features = features.view(batch_size * n_views, -1)  # [batch*views, dim]
         labels = labels.repeat(n_views)  # [batch*views]
-        
+
         # Normalize features
         features = F.normalize(features, dim=1)
-        
+
         # Compute similarity
         sim = torch.mm(features, features.t()) / self.temperature
-        
+
         # Mask for same instance
         mask_self = torch.eye(batch_size * n_views, device=device, dtype=torch.bool)
-        
+
         # Mask for same class (positive pairs)
         labels = labels.view(-1, 1)
         mask_pos = torch.eq(labels, labels.t()).float()
         mask_pos = mask_pos.masked_fill(mask_self, 0)
-        
+
         # Compute loss
         exp_sim = torch.exp(sim)
         exp_sim = exp_sim.masked_fill(mask_self, 0)
-        
+
         # Log-sum-exp for denominator
         log_prob = sim - torch.log(exp_sim.sum(dim=1, keepdim=True) + 1e-8)
-        
+
         # Mean of positive pairs
         mask_pos_sum = mask_pos.sum(dim=1)
         mask_pos_sum = torch.clamp(mask_pos_sum, min=1)
-        
+
         mean_log_prob = (mask_pos * log_prob).sum(dim=1) / mask_pos_sum
-        
+
         # Loss
         loss = -mean_log_prob.mean() * (self.temperature / self.base_temperature)
 
@@ -376,7 +378,7 @@ class SupConLoss(nn.Module):
             # Detailed diagnostics on the first batch
             unique_labels = torch.unique(labels.squeeze())
             avg_pos_pairs = mask_pos.sum(dim=1).mean().item()
-            sim_diag = sim.diag()
+            sim.diag()
             logger.info(
                 f"  [SupCon first batch] batch_size={batch_size}, n_views={n_views}, "
                 f"classes={len(unique_labels)}, "
@@ -392,7 +394,7 @@ class ContrastiveAugmentation(nn.Module):
     """
     DNA sequence augmentations for contrastive learning.
     """
-    
+
     def __init__(
         self,
         mutation_rate: float = 0.1,
@@ -402,7 +404,7 @@ class ContrastiveAugmentation(nn.Module):
     ):
         """
         Initialize augmentations.
-        
+
         Args:
             mutation_rate: Random mutation probability.
             mask_rate: Masking probability.
@@ -422,29 +424,29 @@ class ContrastiveAugmentation(nn.Module):
             f"ContrastiveAugmentation: mutation_rate={mutation_rate}, "
             f"mask_rate={mask_rate}, crop_ratio={crop_ratio}"
         )
-    
+
     def random_mutation(self, x: torch.Tensor) -> torch.Tensor:
         """Apply random mutations."""
         mask = torch.rand_like(x[:, 0:1, :]) < self.mutation_rate
         mask = mask.expand_as(x)
-        
+
         # Random one-hot
         random_onehot = F.one_hot(
             torch.randint(0, 4, (x.size(0), x.size(2)), device=x.device),
             num_classes=4,
         ).permute(0, 2, 1).float()
-        
+
         return torch.where(mask, random_onehot, x)
-    
+
     def random_mask(self, x: torch.Tensor) -> torch.Tensor:
         """Mask random positions."""
         mask = torch.rand(x.size(0), 1, x.size(2), device=x.device) < self.mask_rate
         return x * (~mask).float()
-    
+
     def reverse_complement(self, x: torch.Tensor) -> torch.Tensor:
         """Apply reverse complement."""
         return reverse_complement(x)
-    
+
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         # View 1: crop -> mutation -> optional reverse complement
         view1 = self.random_crop(x)
@@ -515,7 +517,7 @@ class ContrastiveTrainer:
     """
     Trainer for contrastive learning.
     """
-    
+
     def __init__(
         self,
         encoder: ContrastiveEncoder,
@@ -531,7 +533,7 @@ class ContrastiveTrainer:
     ):
         """
         Initialize trainer.
-        
+
         Args:
             encoder: Contrastive encoder model.
             optimizer: Optimizer.
@@ -574,7 +576,7 @@ class ContrastiveTrainer:
             f"ContrastiveTrainer initialized: loss={loss_name}, "
             f"temperature={temperature}, device={device}"
         )
-    
+
     def _compute_loss(self, z1: torch.Tensor, z2: torch.Tensor, labels: torch.Tensor | None) -> torch.Tensor:
         if not self.use_supervised:
             return self.criterion(z1, z2)
@@ -624,7 +626,7 @@ class ContrastiveTrainer:
         )
 
         for batch_idx, batch in pbar:
-            t_batch = time.time()
+            time.time()
 
             if isinstance(batch, (list, tuple)):
                 x = batch[0].to(self.device)

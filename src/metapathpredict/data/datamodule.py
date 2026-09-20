@@ -18,13 +18,12 @@ try:
 except ImportError:
     HAS_SKLEARN = False
 
-from metapathpredict.config import Settings, DataConfig
+from metapathpredict.config import Settings
+from metapathpredict.data.augmentation import SequenceAugmentation
 from metapathpredict.data.dataset import (
-    SequenceDataset,
     HDF5SequenceDataset,
     InMemoryHDF5Dataset,
 )
-from metapathpredict.data.augmentation import SequenceAugmentation
 
 logger = logging.getLogger(__name__)
 
@@ -51,13 +50,13 @@ def _open_split(path: Path) -> Dataset:
 class SequenceDataModule:
     """
     DataModule for sequence classification.
-    
+
     Handles:
     - Dataset creation and splitting
     - DataLoader configuration
     - Augmentation setup
     - Class weight computation
-    
+
     Example:
         ```python
         datamodule = SequenceDataModule.from_hdf5(
@@ -65,13 +64,13 @@ class SequenceDataModule:
             val_path="data/val.hdf5",
             batch_size=64,
         )
-        
+
         for batch in datamodule.train_dataloader():
             x, y = batch
             ...
         ```
     """
-    
+
     def __init__(
         self,
         train_dataset: Dataset | None = None,
@@ -86,7 +85,7 @@ class SequenceDataModule:
     ):
         """
         Initialize DataModule.
-        
+
         Args:
             train_dataset: Training dataset.
             val_dataset: Validation dataset.
@@ -101,7 +100,7 @@ class SequenceDataModule:
         self.train_dataset = train_dataset
         self.val_dataset = val_dataset
         self.test_dataset = test_dataset
-        
+
         self.batch_size = batch_size
         self.num_workers = num_workers
         # ML-005: Disable pin_memory on CPU (useless and causes warning)
@@ -109,11 +108,11 @@ class SequenceDataModule:
         self.persistent_workers = persistent_workers and num_workers > 0
         self.drop_last = drop_last
         self.prefetch_factor = prefetch_factor if num_workers > 0 else None
-        
+
         self._train_loader: DataLoader | None = None
         self._val_loader: DataLoader | None = None
         self._test_loader: DataLoader | None = None
-    
+
     def _loader(self, dataset: Dataset, batch_size: int, shuffle: bool, drop_last: bool) -> DataLoader:
         return DataLoader(
             dataset,
@@ -145,9 +144,9 @@ class SequenceDataModule:
                 drop_last=self.drop_last,
                 prefetch_factor=self.prefetch_factor,
             )
-        
+
         return self._train_loader
-    
+
     def val_dataloader(self, batch_size: int | None = None) -> DataLoader:
         """Get validation dataloader. A `batch_size` override returns a separate, uncached loader."""
         if self.val_dataset is None:
@@ -168,14 +167,14 @@ class SequenceDataModule:
                 drop_last=False,
                 prefetch_factor=self.prefetch_factor,
             )
-        
+
         return self._val_loader
-    
+
     def test_dataloader(self) -> DataLoader:
         """Get test dataloader."""
         if self.test_dataset is None:
             raise ValueError("Test dataset not set")
-        
+
         if self._test_loader is None:
             self._test_loader = DataLoader(
                 self.test_dataset,
@@ -187,25 +186,25 @@ class SequenceDataModule:
                 drop_last=False,
                 prefetch_factor=self.prefetch_factor,
             )
-        
+
         return self._test_loader
-    
+
     def get_class_weights(self, device: str | torch.device = "cpu") -> torch.Tensor:
         """
         Compute class weights from training dataset.
-        
+
         Args:
             device: Device to place weights on.
-        
+
         Returns:
             Tensor of class weights.
         """
         if self.train_dataset is None:
             raise ValueError("Training dataset not set")
-        
+
         if hasattr(self.train_dataset, "get_class_weights"):
             return self.train_dataset.get_class_weights().to(device)
-        
+
         # Fallback: compute from labels
         labels = []
         for _, label in self.train_dataset:
@@ -213,14 +212,14 @@ class SequenceDataModule:
                 labels.append(label.item())
             else:
                 labels.append(label)
-        
+
         labels = torch.tensor(labels)
         unique, counts = torch.unique(labels, return_counts=True)
         weights = 1.0 / counts.float()
         weights = weights / weights.sum() * len(unique)
-        
+
         return weights.to(device)
-    
+
     @classmethod
     def from_hdf5(
         cls,
@@ -230,10 +229,10 @@ class SequenceDataModule:
         in_memory: bool = True,
         augmentation: SequenceAugmentation | None = None,
         **kwargs,
-    ) -> "SequenceDataModule":
+    ) -> SequenceDataModule:
         """
         Create DataModule from HDF5 files.
-        
+
         Args:
             train_path: Path to training HDF5 file.
             val_path: Path to validation HDF5 file.
@@ -241,32 +240,32 @@ class SequenceDataModule:
             in_memory: Whether to load datasets into memory.
             augmentation: Augmentation to apply to training data.
             **kwargs: Additional arguments for DataModule.
-        
+
         Returns:
             SequenceDataModule instance.
         """
         DatasetClass = InMemoryHDF5Dataset if in_memory else HDF5SequenceDataset
-        
+
         train_dataset = DatasetClass(
             train_path,
             augmentation=augmentation,
         )
-        
+
         val_dataset = None
         if val_path and Path(val_path).exists():
             val_dataset = DatasetClass(val_path)
-        
+
         test_dataset = None
         if test_path and Path(test_path).exists():
             test_dataset = DatasetClass(test_path)
-        
+
         return cls(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
             test_dataset=test_dataset,
             **kwargs,
         )
-    
+
     @classmethod
     def from_single_hdf5(
         cls,
@@ -278,10 +277,10 @@ class SequenceDataModule:
         in_memory: bool = True,
         stratified: bool = True,
         **kwargs,
-    ) -> "SequenceDataModule":
+    ) -> SequenceDataModule:
         """
         Create DataModule from a single HDF5 file with automatic splitting.
-        
+
         Args:
             hdf5_path: Path to HDF5 file.
             train_ratio: Fraction for training.
@@ -291,17 +290,17 @@ class SequenceDataModule:
             in_memory: Whether to load into memory.
             stratified: Whether to use stratified split (preserves class proportions).
             **kwargs: Additional arguments.
-        
+
         Returns:
             SequenceDataModule instance.
         """
         assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 0.01
-        
+
         DatasetClass = InMemoryHDF5Dataset if in_memory else HDF5SequenceDataset
         full_dataset = DatasetClass(hdf5_path)
-        
+
         total_size = len(full_dataset)
-        
+
         # Try stratified split if sklearn available and requested
         if stratified and HAS_SKLEARN:
             try:
@@ -313,10 +312,10 @@ class SequenceDataModule:
                         all_labels.append(label.item())
                     else:
                         all_labels.append(int(label))
-                
+
                 all_labels = np.array(all_labels)
                 indices = np.arange(total_size)
-                
+
                 # First split: train vs (val + test)
                 train_idx, temp_idx = train_test_split(
                     indices,
@@ -324,7 +323,7 @@ class SequenceDataModule:
                     stratify=all_labels,
                     random_state=seed,
                 )
-                
+
                 # Second split: val vs test
                 temp_labels = all_labels[temp_idx]
                 relative_test_ratio = test_ratio / (val_ratio + test_ratio)
@@ -334,13 +333,13 @@ class SequenceDataModule:
                     stratify=temp_labels,
                     random_state=seed,
                 )
-                
+
                 train_dataset = Subset(full_dataset, train_idx.tolist())
                 val_dataset = Subset(full_dataset, val_idx.tolist())
                 test_dataset = Subset(full_dataset, test_idx.tolist())
-                
+
                 logger.info(f"Using stratified split: train={len(train_dataset)}, val={len(val_dataset)}, test={len(test_dataset)}")
-                
+
                 return cls(
                     train_dataset=train_dataset,
                     val_dataset=val_dataset,
@@ -349,28 +348,28 @@ class SequenceDataModule:
                 )
             except Exception as e:
                 logger.warning(f"Stratified split failed ({e}), falling back to random split")
-        
+
         # Fallback to random split
         train_size = int(total_size * train_ratio)
         val_size = int(total_size * val_ratio)
         test_size = total_size - train_size - val_size
-        
+
         generator = torch.Generator().manual_seed(seed)
         train_dataset, val_dataset, test_dataset = random_split(
             full_dataset,
             [train_size, val_size, test_size],
             generator=generator,
         )
-        
+
         return cls(
             train_dataset=train_dataset,
             val_dataset=val_dataset,
             test_dataset=test_dataset,
             **kwargs,
         )
-    
+
     @classmethod
-    def from_config(cls, config: Settings) -> "SequenceDataModule":
+    def from_config(cls, config: Settings) -> SequenceDataModule:
         """
         Create DataModule from Settings configuration.
 
@@ -424,29 +423,29 @@ class SequenceDataModule:
             batch_size=training_config.batch_size,
             num_workers=data_config.num_workers,
         )
-    
+
     @property
     def num_train_samples(self) -> int:
         """Number of training samples."""
         return len(self.train_dataset) if self.train_dataset else 0
-    
+
     @property
     def num_val_samples(self) -> int:
         """Number of validation samples."""
         return len(self.val_dataset) if self.val_dataset else 0
-    
+
     @property
     def num_test_samples(self) -> int:
         """Number of test samples."""
         return len(self.test_dataset) if self.test_dataset else 0
-    
+
     def get_sample_batch(self, split: Literal["train", "val", "test"] = "train") -> tuple:
         """
         Get a sample batch for debugging.
-        
+
         Args:
             split: Which split to sample from.
-        
+
         Returns:
             Single batch tuple.
         """
@@ -456,5 +455,5 @@ class SequenceDataModule:
             loader = self.val_dataloader()
         else:
             loader = self.test_dataloader()
-        
+
         return next(iter(loader))

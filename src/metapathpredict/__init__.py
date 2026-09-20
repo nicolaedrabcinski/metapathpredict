@@ -24,28 +24,28 @@ from metapathpredict.data import (
     SequencePreprocessor,
 )
 from metapathpredict.models import (
+    # Reinforcement Learning (primary)
+    ActorCriticAgent,
+    # CNN backbone
+    ConfigurableCNN,
     # Contrastive Learning (primary)
     ContrastiveAugmentation,
     ContrastiveEncoder,
     ContrastiveTrainer,
-    NTXentLoss,
-    SupConLoss,
-    # Reinforcement Learning (primary)
-    ActorCriticAgent,
     DQNAgent,
-    PolicyGradientAgent,
-    RLTrainer,
-    SequenceEnvironment,
-    ReplayBuffer,
-    # CNN backbone
-    ConfigurableCNN,
-    create_configurable_cnn,
     # Legacy CNN models (kept for backward compatibility)
     MultiScaleCNN,
+    NTXentLoss,
+    PolicyGradientAgent,
+    ReplayBuffer,
     ResidualCNN,
+    RLTrainer,
+    SequenceEnvironment,
     SimpleCNN,
+    SupConLoss,
     UnifiedClassifier,
     create_cnn_model,
+    create_configurable_cnn,
 )
 
 __all__ = [
