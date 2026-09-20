@@ -123,12 +123,13 @@ def save_supervised_checkpoint(model: nn.Module, path, config: dict) -> None:
 
 
 def build_classifier(num_classes: int, backbone: str = "large", base_channels: int = 128, norm: str = "batch",
-                     pool: str = "avg", rc_share: str = "none") -> nn.Module:
+                     pool: str = "avg", rc_share: str = "none", dilation: int | list[int] = 1,
+                     gate: bool = False) -> nn.Module:
     """A ConfigurableCNN classifier, optionally looking at both strands with shared weights (`rc_share`: mean | max)."""
     from metapathpredict.models.configurable_cnn import ConfigurableCNN, RCShared
 
     model = ConfigurableCNN(in_channels=4, num_classes=num_classes, kernel_preset=backbone,
-                            base_channels=base_channels, norm=norm, pool=pool)
+                            base_channels=base_channels, norm=norm, pool=pool, dilation=dilation, gate=gate)
     return model if rc_share == "none" else RCShared(model, rc_share)
 
 
@@ -137,7 +138,8 @@ def load_supervised_checkpoint(path, device="cpu") -> nn.Module:
     checkpoint = torch.load(path, map_location="cpu", weights_only=False)
     config = checkpoint["config"]
     model = build_classifier(config["num_classes"], config["backbone"], config["base_channels"], config.get("norm", "batch"),
-                             config.get("pool", "avg"), config.get("rc_share", "none"))
+                             config.get("pool", "avg"), config.get("rc_share", "none"), config.get("dilation", 1),
+                             config.get("gate", False))
     model.load_state_dict(checkpoint["state_dict"])
     return model.to(device).eval()
 
@@ -176,7 +178,8 @@ def load_ensemble_checkpoint(path, device="cpu") -> EnsembleClassifier:
     members = []
     for state_dict, config in zip(checkpoint["members"], checkpoint["configs"]):
         model = build_classifier(config["num_classes"], config["backbone"], config["base_channels"],
-                                 config.get("norm", "batch"), config.get("pool", "avg"), config.get("rc_share", "none"))
+                                 config.get("norm", "batch"), config.get("pool", "avg"), config.get("rc_share", "none"),
+                                 config.get("dilation", 1), config.get("gate", False))
         model.load_state_dict(state_dict)
         members.append(model)
     return EnsembleClassifier(members).to(device).eval()

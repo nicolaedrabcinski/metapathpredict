@@ -137,7 +137,8 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
     val_loader = DataLoader(splits["val"], batch_size=512, shuffle=False, num_workers=0)
     test_loader = DataLoader(splits["test"], batch_size=512, shuffle=False, num_workers=0)
 
-    model = build_classifier(len(class_names), args.backbone, args.base_channels, args.norm, args.pool, args.rc_share)
+    model = build_classifier(len(class_names), args.backbone, args.base_channels, args.norm, args.pool, args.rc_share,
+                             args.dilation, args.gate)
     if args.aux_rank:
         aux_head = torch.nn.Linear(model._final_channels, len(aux_names))
     if args.init_from:
@@ -148,7 +149,8 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
     with MLflowSink("baselines", run_name=name, tracking_uri=f"sqlite:///{REPO_ROOT / 'mlflow.db'}",
                     tags={"baseline": "supervised"}) as sink:
         sink.log_params({"model": "cnn_cross_entropy", "backbone": args.backbone, "base_channels": args.base_channels,
-                         "norm": args.norm, "pool": args.pool, "rc_share": args.rc_share, "augment": args.augment, "lr": args.lr, "weight_decay": args.weight_decay,
+                         "norm": args.norm, "pool": args.pool, "rc_share": args.rc_share, "dilation": args.dilation,
+                         "gate": args.gate, "augment": args.augment, "lr": args.lr, "weight_decay": args.weight_decay,
                          "batch_size": args.batch_size, "epochs": args.epochs, "patience": args.patience,
                          "seed": args.seed, "mutation_rate": args.mutation_rate, "mask_rate": args.mask_rate,
                          "init_from": args.init_from or "scratch", "lr_schedule": args.lr_schedule,
@@ -167,7 +169,7 @@ def run_supervised(args, data_dir: Path, class_names: list[str]) -> None:
         if args.save_checkpoint:
             save_supervised_checkpoint(model, out_dir / "model.pt", {
                 "backbone": args.backbone, "base_channels": args.base_channels, "norm": args.norm,
-                "pool": args.pool, "rc_share": args.rc_share,
+                "pool": args.pool, "rc_share": args.rc_share, "dilation": args.dilation, "gate": args.gate,
                 "num_classes": len(class_names), "class_names": class_names, "best_epoch": fit["best_epoch"]})
 
 
@@ -198,6 +200,10 @@ def main() -> None:
     sup.add_argument("--pool", choices=["avg", "max", "avgmax"], default="avg", help="reduction over positions")
     sup.add_argument("--rc-share", choices=["none", "mean", "max"], default="none",
                      help="same weights for both strands: combine the embeddings of a sequence and its reverse complement")
+    sup.add_argument("--dilation", type=int, default=1,
+                     help="conv dilation (same for every block): widens the receptive field without adding parameters")
+    sup.add_argument("--gate", action="store_true",
+                     help="Gated Linear Unit instead of ReLU in every block (roughly doubles conv parameters)")
     sup.add_argument("--init-from", help="contrastive checkpoint whose backbone initialises the CNN")
     sup.add_argument("--lr-schedule", choices=["constant", "cosine"], default="constant")
     sup.add_argument("--aux-rank", choices=["phylum", "class", "order", "family", "genus"],

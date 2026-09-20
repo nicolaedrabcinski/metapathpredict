@@ -329,3 +329,47 @@ def test_ensemble_checkpoint_loads_through_the_cli_like_a_single_model(tmp_path)
     assert model_type == "supervised" and loaded.class_names == ["bacteria", "archaea", "virus"]
     class_idx, confidence, probs = _predict_single(loaded, model_type, x[:1])
     assert len(probs) == 3 and confidence == pytest.approx(max(probs), abs=1e-6)
+
+
+# ------------------------------------------------------------------ dilation and gating (R-1, R-2)
+def test_dilation_widens_receptive_field_without_adding_parameters():
+    torch.manual_seed(0)
+    x = _gc_data(n=4)[0]
+    base = ConfigurableCNN(num_classes=2, kernel_preset="large", base_channels=16)
+    dilated = ConfigurableCNN(num_classes=2, kernel_preset="large", base_channels=16, dilation=2)
+    per_block = ConfigurableCNN(num_classes=2, kernel_preset="large", base_channels=16, dilation=[1, 2, 4])
+    assert base(x).shape == dilated(x).shape == per_block(x).shape == (4, 2)
+    n = lambda m: sum(p.numel() for p in m.parameters())
+    assert n(base) == n(dilated) == n(per_block)
+    with pytest.raises(ValueError):
+        ConfigurableCNN(num_classes=2, kernel_preset="large", dilation=[1, 2])  # 2 entries for 3 blocks
+
+
+def test_gate_uses_glu_doubles_conv_params_and_has_no_batchnorm_mismatch():
+    torch.manual_seed(0)
+    x = _gc_data(n=4)[0]
+    base = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16)
+    gated = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16, gate=True)
+    assert base(x).shape == gated(x).shape == (4, 2)
+    n = lambda m: sum(p.numel() for p in m.parameters())
+    assert n(gated) > n(base) * 1.5  # conv channels doubled in every block
+
+
+def test_dilation_and_gate_combine_and_survive_a_checkpoint_round_trip(tmp_path):
+    torch.manual_seed(0)
+    x = _gc_data(n=4)[0]
+    model = build_classifier(2, "small", 16, "batch", "avg", "none", dilation=2, gate=True).eval()
+    config = {"backbone": "small", "base_channels": 16, "num_classes": 2, "dilation": 2, "gate": True}
+    path = tmp_path / "m.pt"
+    save_supervised_checkpoint(model, path, config)
+    loaded = load_supervised_checkpoint(path)
+    assert loaded.dilation == 2 and loaded.gate is True
+    with torch.no_grad():
+        assert torch.allclose(model(x), loaded(x), atol=1e-6)
+
+
+def test_old_checkpoints_without_dilation_or_gate_default_to_plain_relu(tmp_path):
+    model = ConfigurableCNN(num_classes=2, kernel_preset="small", base_channels=16).eval()
+    torch.save({"state_dict": model.state_dict(), "config": {"backbone": "small", "base_channels": 16, "num_classes": 2}}, tmp_path / "old.pt")
+    loaded = load_supervised_checkpoint(tmp_path / "old.pt")
+    assert loaded.dilation == 1 and loaded.gate is False

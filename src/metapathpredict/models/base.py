@@ -133,6 +133,7 @@ class ConvBlock(nn.Module):
         activation: nn.Module | None = None,
         dropout: float = 0.0,
         pool_size: int | None = None,
+        gate: bool = False,
     ):
         super().__init__()
 
@@ -140,9 +141,11 @@ class ConvBlock(nn.Module):
         if padding == "same":
             padding = (kernel_size - 1) // 2 * dilation
 
+        self.gate = gate
+        conv_channels = out_channels * 2 if gate else out_channels  # GLU: half becomes the value, half the gate
         self.conv = nn.Conv1d(
             in_channels,
-            out_channels,
+            conv_channels,
             kernel_size,
             stride=stride,
             padding=padding,
@@ -153,11 +156,11 @@ class ConvBlock(nn.Module):
 
         self.norm = None
         if use_batch_norm:
-            self.norm = nn.BatchNorm1d(out_channels)
+            self.norm = nn.BatchNorm1d(conv_channels)
         elif use_group_norm:
-            self.norm = nn.GroupNorm(group_count(out_channels), out_channels)
+            self.norm = nn.GroupNorm(group_count(conv_channels), conv_channels)
         elif use_layer_norm:
-            self.norm = nn.LayerNorm(out_channels)
+            self.norm = nn.LayerNorm(conv_channels)
 
         self.activation = activation or nn.ReLU(inplace=True)
         self.dropout = nn.Dropout(dropout) if dropout > 0 else None
@@ -175,7 +178,13 @@ class ConvBlock(nn.Module):
             else:
                 x = self.norm(x)
 
-        x = self.activation(x)
+        if self.gate:
+            # Gated Linear Unit (Dauphin et al. 2016): the sigmoid gate is the nonlinearity,
+            # no separate activation on top.
+            value, gate = x.chunk(2, dim=1)
+            x = value * torch.sigmoid(gate)
+        else:
+            x = self.activation(x)
 
         if self.dropout is not None:
             x = self.dropout(x)

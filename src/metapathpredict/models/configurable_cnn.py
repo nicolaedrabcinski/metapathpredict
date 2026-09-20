@@ -45,6 +45,8 @@ class ConfigurableCNN(BaseModel):
         dropout: float = 0.3,
         norm: Literal["batch", "group"] = "batch",
         pool: Literal["avg", "max", "avgmax"] = "avg",
+        dilation: int | list[int] = 1,
+        gate: bool = False,
     ):
         """
         Initialize configurable CNN.
@@ -61,6 +63,14 @@ class ConfigurableCNN(BaseModel):
             norm: "batch" (BatchNorm) or "group" (GroupNorm, statistics never mix samples).
             pool: how the feature map is reduced over positions: "avg" (composition-like), "max"
                 (presence of a motif) or "avgmax" (both, twice as many features).
+            dilation: spacing between kernel taps, widening the receptive field without adding
+                parameters (ConvNova, arXiv:2502.18538). A single int applies to every block; a list
+                gives each block (in `kernel_sizes` order) its own, e.g. [1, 2, 4]. Only the
+                sequential presets use this — "multi" ignores it, its branches stay dilation 1.
+            gate: Gated Linear Unit (Dauphin et al. 2016; ConvNova, arXiv:2502.18538) in every
+                sequential block instead of ReLU: the conv output is split in half, one half gates
+                the other through a sigmoid. Roughly doubles each block's conv parameters. "multi"
+                ignores this too.
         """
         super().__init__()
         if norm not in ("batch", "group"):
@@ -70,6 +80,8 @@ class ConfigurableCNN(BaseModel):
             raise ValueError(f"pool must be 'avg', 'max' or 'avgmax', got {pool!r}")
         self.pool_type = pool
         self._pool_factor = 2 if pool == "avgmax" else 1
+        self.dilation = dilation
+        self.gate = gate
 
         # Determine kernel sizes
         if custom_kernels is not None:
@@ -83,7 +95,7 @@ class ConfigurableCNN(BaseModel):
         if self.use_multi_scale:
             self._build_multiscale(in_channels, num_classes, base_channels, use_se, dropout)
         else:
-            self._build_sequential(in_channels, num_classes, base_channels, num_blocks, use_se, dropout)
+            self._build_sequential(in_channels, num_classes, base_channels, num_blocks, use_se, dropout, dilation, gate)
 
     def _build_sequential(
         self,
@@ -93,13 +105,19 @@ class ConfigurableCNN(BaseModel):
         num_blocks: int,
         use_se: bool,
         dropout: float,
+        dilation: int | list[int] = 1,
+        gate: bool = False,
     ) -> None:
         """Build sequential CNN architecture."""
         layers = []
+        kernels = self.kernel_sizes[:num_blocks]
+        dilations = [dilation] * len(kernels) if isinstance(dilation, int) else list(dilation)
+        if len(dilations) != len(kernels):
+            raise ValueError(f"dilation has {len(dilations)} entries for {len(kernels)} blocks")
 
         current_channels = in_channels
 
-        for i, kernel_size in enumerate(self.kernel_sizes[:num_blocks]):
+        for i, (kernel_size, d) in enumerate(zip(kernels, dilations)):
             out_channels = base_channels * (2 ** i)
 
             layers.append(
@@ -107,9 +125,11 @@ class ConfigurableCNN(BaseModel):
                     in_channels=current_channels,
                     out_channels=out_channels,
                     kernel_size=kernel_size,
-                    padding=kernel_size // 2,
+                    padding=(kernel_size // 2) * d,
+                    dilation=d,
                     pool_size=2,
                     dropout=dropout if i > 0 else 0.0,
+                    gate=gate,
                     **self._norm_flags(),
                 )
             )
