@@ -119,9 +119,11 @@ class PathConfig(BaseModel):
     bacteria_fasta: Path = Field(default=Path("data/input/bacteria.fasta"))
     eukaryotic_fasta: Path = Field(default=Path("data/input/eukaryotic.fasta"))
 
-    # Output paths
-    datasets_dir: Path = Field(default=Path("data/datasets/unified"))
-    weights_dir: Path = Field(default=Path("data/weights/unified"))
+    # Output paths (placeholders: every real run overrides these via a config file, e.g.
+    # configs/train_gpu.yaml or conf/config.yaml, which point at a dataset prepared by
+    # `metapathpredict prepare --manifest`)
+    datasets_dir: Path = Field(default=Path("data/datasets/default"))
+    weights_dir: Path = Field(default=Path("data/weights/default"))
     predictions_dir: Path = Field(default=Path("data/output/predictions"))
     logs_dir: Path = Field(default=Path("logs"))
 

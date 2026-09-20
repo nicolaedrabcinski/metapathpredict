@@ -56,8 +56,8 @@ class TestPathConfig:
         """Test default path values."""
         config = PathConfig()
         assert config.data_dir == Path("data")
-        assert config.datasets_dir == Path("data/datasets/unified")
-        assert config.weights_dir == Path("data/weights/unified")
+        assert config.datasets_dir == Path("data/datasets/default")
+        assert config.weights_dir == Path("data/weights/default")
 
     def test_custom_paths(self):
         """Test custom path values."""

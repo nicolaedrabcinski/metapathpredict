@@ -1,36 +1,17 @@
 # MetaPathPredict Training Configuration
-# CPU-optimized settings
+# CPU-friendly settings (smaller backbone/batches than configs/train_gpu.yaml)
+#
+# Needs a dataset prepared first, e.g.:
+#   metapathpredict prepare --manifest data/genomes/manifest.tsv --config configs/train_cpu.yaml \
+#       --output data/datasets/taxa8 --length 500 --fragments-per-class 30000
 
 # Data configuration
 data:
   default_fragment_size: 500
-  num_workers: 16
-  train_ratio: 0.8
-  val_ratio: 0.1
-  test_ratio: 0.1
-
-# Model configuration
-model:
-  model_type: "multi_scale_cnn"
-  num_classes: 3
-  kernel_sizes: [5, 7, 11]
-  num_filters: [32, 64, 128]
-  hidden_dims: [256, 128]
-  dropout_rate: 0.3
-  use_batch_norm: true
-
-# Training configuration
-training:
-  num_epochs: 10
-  batch_size: 128
-  learning_rate: 0.002
-  weight_decay: 0.0001
-  optimizer: "adamw"
-  scheduler: "cosine"
-  warmup_epochs: 2
-  use_amp: false
-  gradient_clip_val: 1.0
-  patience: 5
+  num_workers: 4
+  train_ratio: 0.7
+  val_ratio: 0.15
+  test_ratio: 0.15
 
 # Contrastive learning configuration
 contrastive:
@@ -45,7 +26,13 @@ contrastive:
   num_epochs: 20
   learning_rate: 0.001
   weight_decay: 0.0001
-  batch_size: 128
+  batch_size: 32
+  early_stopping_patience: 7
+  probe_epochs: 15
+
+scheduler:
+  name: cosine
+  warmup_epochs: 2
 
 # Reinforcement learning configuration
 rl:
@@ -60,6 +47,7 @@ rl:
   learning_rate: 0.0001
   weight_decay: 0.0001
   gamma: 0.99
+  early_stopping_patience: 7
   epsilon_start: 1.0
   epsilon_end: 0.05
   epsilon_decay_epochs: 5
@@ -67,14 +55,14 @@ rl:
   target_update_freq: 5
 
 # Project settings
-project_name: "metapathpredict-unified"
+project_name: "metapathpredict-cpu"
 experiment_name: "cpu-training"
 
-# Paths (relative to project root, resolved at runtime)
+# Paths
 paths:
   base_dir: "."
   data_dir: "data"
-  datasets_dir: "data/datasets/unified"
-  weights_dir: "data/weights/unified"
+  datasets_dir: "data/datasets/taxa8"
+  weights_dir: "data/weights/taxa8"
   predictions_dir: "data/output/predictions"
   logs_dir: "logs"
