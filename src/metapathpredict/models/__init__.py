@@ -29,13 +29,11 @@ from metapathpredict.models.reinforcement import (
     RLTrainer,
     SequenceEnvironment,
 )
-from metapathpredict.models.unified import UnifiedClassifier
 
 __all__ = [
     # Base
     "BaseModel",
     # CNN
-    "UnifiedClassifier",
     "MultiScaleCNN",
     "ResidualCNN",
     "SimpleCNN",

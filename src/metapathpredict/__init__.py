@@ -43,7 +43,6 @@ from metapathpredict.models import (
     SequenceEnvironment,
     SimpleCNN,
     SupConLoss,
-    UnifiedClassifier,
     create_cnn_model,
     create_configurable_cnn,
 )
@@ -73,7 +72,6 @@ __all__ = [
     "SequenceDataModule",
     "SequencePreprocessor",
     # Legacy
-    "UnifiedClassifier",
     "MultiScaleCNN",
     "ResidualCNN",
     "SimpleCNN",
