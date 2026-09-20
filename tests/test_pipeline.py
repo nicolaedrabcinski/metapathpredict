@@ -232,3 +232,71 @@ class TestCheckpointLoading:
         assert model_type == "rl"
         assert algorithm == "actor_critic"
         assert isinstance(model, ActorCriticAgent)
+
+    def test_load_supervised_checkpoint(self, tmp_path):
+        """A scripts/baselines.py checkpoint (ConfigurableCNN, key 'state_dict') loads as 'supervised'."""
+        from metapathpredict.baselines import save_supervised_checkpoint
+        from metapathpredict.cli import _load_model_from_checkpoint
+        from metapathpredict.models.configurable_cnn import ConfigurableCNN
+
+        model = ConfigurableCNN(num_classes=8, kernel_preset="small", base_channels=16)
+        path = tmp_path / "supervised.pt"
+        save_supervised_checkpoint(model, path, {
+            "backbone": "small", "base_channels": 16, "norm": "batch",
+            "num_classes": 8, "class_names": ["a", "b", "c", "d", "e", "f", "g", "h"],
+        })
+
+        result = _load_model_from_checkpoint(path, torch.device("cpu"))
+        assert len(result) == 2
+        loaded, model_type = result
+        assert model_type == "supervised"
+        assert isinstance(loaded, ConfigurableCNN)
+        assert loaded.class_names == ["a", "b", "c", "d", "e", "f", "g", "h"]
+        x = torch.zeros(1, 4, 100)
+        with torch.no_grad():
+            assert torch.allclose(loaded(x), model.eval()(x))
+
+    def test_load_supervised_checkpoint_with_rc_share(self, tmp_path):
+        """The RCShare wrapper (scripts/baselines.py --rc-share) round-trips too, not just the plain CNN."""
+        from metapathpredict.baselines import build_classifier, save_supervised_checkpoint
+        from metapathpredict.cli import _load_model_from_checkpoint
+        from metapathpredict.models.configurable_cnn import RCShared
+
+        model = build_classifier(3, "small", 16, "batch", "avg", "mean")
+        path = tmp_path / "rcshare.pt"
+        save_supervised_checkpoint(model, path, {
+            "backbone": "small", "base_channels": 16, "norm": "batch", "pool": "avg",
+            "rc_share": "mean", "num_classes": 3, "class_names": ["bacteria", "eukaryotic", "virus"],
+        })
+
+        loaded, model_type = _load_model_from_checkpoint(path, torch.device("cpu"))
+        assert model_type == "supervised"
+        assert isinstance(loaded, RCShared)
+
+    def test_predict_single_dispatches_supervised_checkpoints(self, tmp_path):
+        """_predict_single (used by evaluate/predict) runs a plain forward+softmax for 'supervised'."""
+        import torch.nn.functional as F
+
+        from metapathpredict.baselines import save_supervised_checkpoint
+        from metapathpredict.cli import _load_model_from_checkpoint, _predict_single
+        from metapathpredict.models.configurable_cnn import ConfigurableCNN
+
+        model = ConfigurableCNN(num_classes=3, kernel_preset="small", base_channels=16).eval()
+        path = tmp_path / "supervised.pt"
+        save_supervised_checkpoint(model, path, {"backbone": "small", "base_channels": 16, "num_classes": 3})
+        loaded, model_type = _load_model_from_checkpoint(path, torch.device("cpu"))
+
+        x = torch.rand(1, 4, 100)
+        class_idx, confidence, probs = _predict_single(loaded, model_type, x)
+        expected = F.softmax(model(x), dim=1).squeeze(0)
+        assert probs == pytest.approx(expected.tolist(), abs=1e-6)
+        assert class_idx == int(expected.argmax())
+        assert confidence == pytest.approx(expected.max().item(), abs=1e-6)
+
+    def test_unrecognised_checkpoint_format_still_raises(self, tmp_path):
+        from metapathpredict.cli import _load_model_from_checkpoint
+
+        path = tmp_path / "junk.pt"
+        torch.save({"something_else": {}}, path)
+        with pytest.raises(ValueError):
+            _load_model_from_checkpoint(path, torch.device("cpu"))

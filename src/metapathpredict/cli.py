@@ -837,9 +837,10 @@ def _encode_sequence_tensor(sequence: str, fragment_size: int = 500) -> torch.Te
 
 
 def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
-    """Load contrastive or RL model from a checkpoint file.
+    """Load a contrastive, RL or plain supervised (scripts/baselines.py) model from a checkpoint file.
 
-    Returns (model, model_type) where model_type is 'contrastive' or 'rl'.
+    Returns (model, model_type) where model_type is 'contrastive', 'rl' (returned as a 3-tuple with the
+    algorithm) or 'supervised'.
     """
     import torch.nn.functional as F
     from metapathpredict.models import (
@@ -890,6 +891,15 @@ def _load_model_from_checkpoint(checkpoint_path: Path, device: torch.device):
         model.to(device).eval()
         return model, "rl", algorithm
 
+    elif "state_dict" in ckpt:
+        # Plain supervised classifier from scripts/baselines.py (ConfigurableCNN, optionally
+        # wrapped in RCShare for shared-weight reverse-complement handling; see metapathpredict.baselines).
+        from metapathpredict.baselines import load_supervised_checkpoint
+
+        model = load_supervised_checkpoint(checkpoint_path, device)
+        model.class_names = config.get("class_names", ["bacteria", "eukaryotic", "virus"])
+        return model, "supervised"
+
     else:
         raise ValueError(f"Unknown checkpoint format: {list(ckpt.keys())}")
 
@@ -917,6 +927,9 @@ def _predict_single(model, model_type: str, x: torch.Tensor,
         if model_type == "contrastive":
             # Classifier head fit as a linear probe at the end of contrastive training
             probs = F.softmax(model.encoder(x), dim=1).squeeze(0)
+        elif model_type == "supervised":
+            # Plain classifier (scripts/baselines.py): the checkpoint's forward pass is the full model
+            probs = F.softmax(model(x), dim=1).squeeze(0)
         else:
             # RL model
             if algorithm == "dqn":

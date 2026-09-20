@@ -155,20 +155,8 @@ module = [
 ]
 ignore_missing_imports = true
 
-# Pytest configuration
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-python_files = ["test_*.py"]
-python_functions = ["test_*"]
-addopts = [
-    "-v",
-    "--tb=short",
-    "--strict-markers",
-]
-markers = [
-    "slow: marks tests as slow",
-    "gpu: marks tests as requiring GPU",
-]
+# Pytest configuration lives in pytest.ini (pytest ignores this section when pytest.ini is present;
+# keeping both invited them to drift apart, see BACKLOG.md A-5).
 
 # Coverage configuration
 [tool.coverage.run]
