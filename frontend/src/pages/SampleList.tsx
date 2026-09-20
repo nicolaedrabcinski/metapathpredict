@@ -125,20 +125,12 @@ export default function SampleList() {
                     {(sample.gc_content * 100).toFixed(1)}%
                   </td>
                   <td className="px-6 py-4">
-                    <div className="flex items-center gap-2">
-                      <Link
-                        to={`/samples/${sample.id}`}
-                        className="text-green-600 hover:text-green-700 text-sm font-medium"
-                      >
-                        View
-                      </Link>
-                      <Link
-                        to={`/attribution/${sample.id}`}
-                        className="text-indigo-600 hover:text-indigo-700 text-sm font-medium"
-                      >
-                        Attribution
-                      </Link>
-                    </div>
+                    <Link
+                      to={`/samples/${sample.id}`}
+                      className="text-green-600 hover:text-green-700 text-sm font-medium"
+                    >
+                      View
+                    </Link>
                   </td>
                 </tr>
               ))

@@ -40,27 +40,18 @@ export default function SampleDetail() {
   return (
     <div className="space-y-8">
       {/* Header */}
-      <div className="flex items-start justify-between">
-        <div>
-          <Link
-            to="/samples"
-            className="flex items-center gap-1 text-slate-500 hover:text-slate-700 mb-2"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Back to samples
-          </Link>
-          <h1 className="text-3xl font-bold text-slate-900">{sample.name}</h1>
-          {sample.description && (
-            <p className="text-slate-600 mt-1">{sample.description}</p>
-          )}
-        </div>
-        
+      <div>
         <Link
-          to={`/attribution/${sampleId}`}
-          className="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 transition-colors"
+          to="/samples"
+          className="flex items-center gap-1 text-slate-500 hover:text-slate-700 mb-2"
         >
-          View Attribution
+          <ArrowLeft className="w-4 h-4" />
+          Back to samples
         </Link>
+        <h1 className="text-3xl font-bold text-slate-900">{sample.name}</h1>
+        {sample.description && (
+          <p className="text-slate-600 mt-1">{sample.description}</p>
+        )}
       </div>
 
       {/* Info Cards */}

@@ -90,15 +90,6 @@ export default function Predictions() {
                     </div>
                   ))}
                 </div>
-
-                <div className="flex justify-end mt-3">
-                  <Link
-                    to={`/attribution/${item.sample_id}`}
-                    className="text-sm text-indigo-600 hover:text-indigo-700 font-medium"
-                  >
-                    View Attribution →
-                  </Link>
-                </div>
               </div>
             ))}
           </div>
